@@ -1,0 +1,27 @@
+services:
+  cacheppuccino:
+    build: .
+    ports:
+      - "8080:8080"
+    user: "0:0"
+    environment:
+      TRANSLATION_BASE_URL: ${TRANSLATION_BASE_URL}
+      TRANSLATION_APPLICATION_ID: ${TRANSLATION_APPLICATION_ID}
+      TRANSLATION_API_KEY: ${TRANSLATION_API_KEY}
+      SQLITE_PATH: "/data/cacheppuccino.db"
+      PULL_INTERVAL: ${PULL_INTERVAL:-10m}
+      HTTP_TIMEOUT: ${HTTP_TIMEOUT:-30s}
+      INITIAL_PULL_DEADLINE: ${INITIAL_PULL_DEADLINE:-45s}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LISTEN_ADDR: ${LISTEN_ADDR:-:8080}
+    volumes:
+      - cacheppuccino_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/cacheppuccino", "--healthcheck"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  cacheppuccino_data:
