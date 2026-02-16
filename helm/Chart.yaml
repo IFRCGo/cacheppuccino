@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cacheppuccino-helm
+description: cacheppuccino - translation XLSX cache service
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

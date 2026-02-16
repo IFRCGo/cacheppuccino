@@ -1,0 +1,11 @@
+cacheppuccino deployed.
+
+Service:
+  {{ include "cacheppuccino.fullname" . }}
+
+Endpoints:
+  /healthz
+  /readyz
+  /status
+  /strings
+  /openapi.json

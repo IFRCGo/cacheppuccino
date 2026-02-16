@@ -51,19 +51,21 @@ func main() {
 
 	// Initial pull: service may start unready, but will become ready after a successful periodic pull.
 	{
+		// FIXME: ready state should only be ready when the data is available
+		ready.SetReady(true)
 		pullCtx, cancel := context.WithTimeout(ctx, cfg.InitialPullDeadline)
 		defer cancel()
 
 		res, err := PullOnce(pullCtx, db, client, cfg.TranslationApplicationID)
 		if err != nil {
-			logger.Warn("initial pull failed; service remains unready until a pull succeeds", slog.String("err", err.Error()))
+			logger.Warn("initial pull failed", slog.String("err", err.Error()))
 		} else {
 			if res.Skipped {
 				logger.Info("initial pull unchanged", slog.String("hash", res.Hash))
 			} else {
 				logger.Info("initial pull imported", slog.Int("rows", res.Rows), slog.String("hash", res.Hash))
 			}
-			ready.SetReady(true)
+			// ready.SetReady(true)
 		}
 	}
 
