@@ -25,8 +25,10 @@ func NewTranslationClient(cfg Config) *TranslationClient {
 	}
 }
 
-func (c *TranslationClient) DownloadXLSX(ctx context.Context, applicationID string) ([]byte, error) {
+func (c *TranslationClient) DownloadXLSX(ctx context.Context, applicationID string, logger *slog.Logger) ([]byte, error) {
 	url := fmt.Sprintf("%s/api/Application/%s/Translation/export", c.baseURL, applicationID)
+
+	logger.Info("Requesting export", slog.String("url", url))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -62,8 +64,9 @@ func PullOnce(
 	db *DB,
 	client *TranslationClient,
 	applicationID string,
+	logger *slog.Logger,
 ) (PullResult, error) {
-	xlsx, err := client.DownloadXLSX(ctx, applicationID)
+	xlsx, err := client.DownloadXLSX(ctx, applicationID, logger)
 	if err != nil {
 		return PullResult{}, err
 	}
@@ -131,7 +134,7 @@ func StartPeriodicPuller(
 			}
 			defer cancel()
 
-			res, err := PullOnce(pullCtx, db, client, applicationID)
+			res, err := PullOnce(pullCtx, db, client, applicationID, logger)
 			if err != nil {
 				if logger != nil {
 					logger.Warn("initial pull failed; service remains unready until a pull succeeds", "err", err)
@@ -168,7 +171,7 @@ func StartPeriodicPuller(
 					}
 				}
 
-				res, err := PullOnce(ctx, db, client, applicationID)
+				res, err := PullOnce(ctx, db, client, applicationID, logger)
 				if err != nil {
 					if logger != nil {
 						logger.Warn("periodic pull failed", "err", err)

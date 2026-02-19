@@ -2,14 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3gen"
 )
 
-// Materialized envelope types for OpenAPI generation.
-// (Generics don't map nicely to OpenAPI, so we document concrete shapes.)
+// Concrete envelope types (so OpenAPI can describe the real JSON)
 type APIResponseHealth struct {
 	Ok   bool            `json:"ok"`
 	Data *HealthResponse `json:"data,omitempty"`
@@ -37,15 +38,18 @@ type APIResponseError struct {
 
 func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	baseURL := inferBaseURL(r)
+
 	spec, err := buildOpenAPISpec(baseURL)
 	if err != nil {
+		fmt.Println(err.Error())
 		writeErr(w, http.StatusInternalServerError, "internal_error", "failed to build openapi spec", nil)
 		return
 	}
 
-	// Keep your consistent envelope:
-	// { "ok": true, "data": <openapi spec object> }
-	writeOK(w, http.StatusOK, *spec)
+	// IMPORTANT: return raw OpenAPI JSON (no { ok, data } envelope)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(spec)
 }
 
 func inferBaseURL(r *http.Request) string {
@@ -65,58 +69,33 @@ func inferBaseURL(r *http.Request) string {
 func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 	gen := openapi3gen.NewGenerator()
 
-	schemas := openapi3.Schemas{}
-
-	addSchema := func(name string, exampleValue any) error {
-		ref, err := gen.NewSchemaRefForValue(exampleValue, nil)
+	// Create JSON content with an inlined schema (no component refs)
+	jsonContentFor := func(example any) (openapi3.Content, error) {
+		ref, err := gen.NewSchemaRefForValue(example, nil)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		schemas[name] = ref
-		return nil
+
+		// Force inline schema so we don't depend on $ref behavior
+		if ref == nil || ref.Value == nil {
+			ref = &openapi3.SchemaRef{Value: openapi3.NewObjectSchema()}
+		} else {
+			ref = &openapi3.SchemaRef{Value: ref.Value}
+		}
+
+		return openapi3.Content{
+			"application/json": &openapi3.MediaType{
+				Schema: ref,
+			},
+		}, nil
 	}
 
-	// Core schemas
-	if err := addSchema("APIError", APIError{}); err != nil {
-		return nil, err
-	}
-	if err := addSchema("HealthResponse", HealthResponse{}); err != nil {
-		return nil, err
-	}
-	if err := addSchema("ReadyResponse", ReadyResponse{}); err != nil {
-		return nil, err
-	}
-	if err := addSchema("StatusResponse", StatusResponse{}); err != nil {
-		return nil, err
-	}
-	if err := addSchema("StringsResponse", StringsResponse{}); err != nil {
-		return nil, err
-	}
-
-	// Envelope schemas
-	if err := addSchema("APIResponse_HealthResponse", APIResponseHealth{}); err != nil {
-		return nil, err
-	}
-	if err := addSchema("APIResponse_ReadyResponse", APIResponseReady{}); err != nil {
-		return nil, err
-	}
-	if err := addSchema("APIResponse_StatusResponse", APIResponseStatus{}); err != nil {
-		return nil, err
-	}
-	if err := addSchema("APIResponse_StringsResponse", APIResponseStrings{}); err != nil {
-		return nil, err
-	}
-	if err := addSchema("APIResponse_Error", APIResponseError{}); err != nil {
-		return nil, err
-	}
-
-	// OpenAPI endpoint response envelope schema:
-	// We intentionally document `data` as a generic object to avoid massive/cyclic schemas.
-	schemas["APIResponse_OpenAPI"] = &openapi3.SchemaRef{
-		Value: openapi3.NewObjectSchema().
-			WithProperty("ok", openapi3.NewBoolSchema()).
-			WithProperty("data", openapi3.NewObjectSchema()).
-			WithRequired([]string{"ok", "data"}),
+	newResponses := func(items map[string]*openapi3.ResponseRef) *openapi3.Responses {
+		rs := openapi3.NewResponses()
+		for code, ref := range items {
+			rs.Set(code, ref)
+		}
+		return rs
 	}
 
 	spec := &openapi3.T{
@@ -126,86 +105,74 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 			Version: "0.1.0",
 		},
 		Servers: openapi3.Servers{
-			&openapi3.Server{URL: baseURL},
-		},
-		Components: &openapi3.Components{
-			Schemas: schemas,
+			{URL: baseURL},
 		},
 		Paths: &openapi3.Paths{},
 	}
 
-	jsonContent := func(schemaName string) openapi3.Content {
-		return openapi3.Content{
-			"application/json": &openapi3.MediaType{
-				Schema: &openapi3.SchemaRef{Ref: "#/components/schemas/" + schemaName},
-			},
-		}
+	// ---- /healthz
+	health200, err := jsonContentFor(APIResponseHealth{})
+	if err != nil {
+		return nil, err
 	}
-
-	// Helper for pointer-based Responses field (newer kin-openapi versions).
-	newResponses := func(items map[string]*openapi3.ResponseRef) *openapi3.Responses {
-		rs := openapi3.NewResponses()
-		for code, ref := range items {
-			rs.Set(code, ref)
-		}
-		return rs
-	}
-
-	// /healthz
 	spec.Paths.Set("/healthz", &openapi3.PathItem{
 		Get: &openapi3.Operation{
 			Summary:     "Liveness endpoint",
 			OperationID: "getHealthz",
 			Responses: newResponses(map[string]*openapi3.ResponseRef{
-				"200": {
-					Value: &openapi3.Response{
-						Description: ptrString("OK"),
-						Content:     jsonContent("APIResponse_HealthResponse"),
-					},
-				},
+				"200": {Value: &openapi3.Response{
+					Description: ptrString("OK"),
+					Content:     health200,
+				}},
 			}),
 		},
 	})
 
-	// /readyz
+	// ---- /readyz
+	ready200, err := jsonContentFor(APIResponseReady{})
+	if err != nil {
+		return nil, err
+	}
+	errResp, err := jsonContentFor(APIResponseError{})
+	if err != nil {
+		return nil, err
+	}
 	spec.Paths.Set("/readyz", &openapi3.PathItem{
 		Get: &openapi3.Operation{
 			Summary:     "Readiness endpoint",
 			OperationID: "getReadyz",
 			Responses: newResponses(map[string]*openapi3.ResponseRef{
-				"200": {
-					Value: &openapi3.Response{
-						Description: ptrString("Ready"),
-						Content:     jsonContent("APIResponse_ReadyResponse"),
-					},
-				},
-				"503": {
-					Value: &openapi3.Response{
-						Description: ptrString("Not ready"),
-						Content:     jsonContent("APIResponse_Error"),
-					},
-				},
+				"200": {Value: &openapi3.Response{
+					Description: ptrString("Ready"),
+					Content:     ready200,
+				}},
+				"503": {Value: &openapi3.Response{
+					Description: ptrString("Not ready"),
+					Content:     errResp,
+				}},
 			}),
 		},
 	})
 
-	// /status
+	// ---- /status
+	status200, err := jsonContentFor(APIResponseStatus{})
+	if err != nil {
+		return nil, err
+	}
 	spec.Paths.Set("/status", &openapi3.PathItem{
 		Get: &openapi3.Operation{
 			Summary:     "Service status",
 			OperationID: "getStatus",
 			Responses: newResponses(map[string]*openapi3.ResponseRef{
-				"200": {
-					Value: &openapi3.Response{
-						Description: ptrString("OK"),
-						Content:     jsonContent("APIResponse_StatusResponse"),
-					},
-				},
+				"200": {Value: &openapi3.Response{
+					Description: ptrString("OK"),
+					Content:     status200,
+				}},
 			}),
 		},
 	})
 
-	// /strings parameters
+	// ---- /strings parameters
 	paramLang := &openapi3.ParameterRef{
 		Value: &openapi3.Parameter{
 			Name:        "lang",
@@ -216,7 +183,6 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 			Example:     "en",
 		},
 	}
-
 	paramPage := &openapi3.ParameterRef{
 		Value: &openapi3.Parameter{
 			Name:        "page",
@@ -229,7 +195,6 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 			Example:     "home",
 		},
 	}
-
 	paramPages := &openapi3.ParameterRef{
 		Value: &openapi3.Parameter{
 			Name:        "pages",
@@ -241,7 +206,11 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 		},
 	}
 
-	// /strings
+	// ---- /strings
+	strings200, err := jsonContentFor(APIResponseStrings{})
+	if err != nil {
+		return nil, err
+	}
 	spec.Paths.Set("/strings", &openapi3.PathItem{
 		Get: &openapi3.Operation{
 			Summary:     "Get strings for one or more pages in a given language",
@@ -252,40 +221,37 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 				paramPages,
 			},
 			Responses: newResponses(map[string]*openapi3.ResponseRef{
-				"200": {
-					Value: &openapi3.Response{
-						Description: ptrString("OK"),
-						Content:     jsonContent("APIResponse_StringsResponse"),
-					},
-				},
-				"400": {
-					Value: &openapi3.Response{
-						Description: ptrString("Bad request"),
-						Content:     jsonContent("APIResponse_Error"),
-					},
-				},
-				"500": {
-					Value: &openapi3.Response{
-						Description: ptrString("Internal error"),
-						Content:     jsonContent("APIResponse_Error"),
-					},
-				},
+				"200": {Value: &openapi3.Response{
+					Description: ptrString("OK"),
+					Content:     strings200,
+				}},
+				"400": {Value: &openapi3.Response{
+					Description: ptrString("Bad request"),
+					Content:     errResp,
+				}},
+				"500": {Value: &openapi3.Response{
+					Description: ptrString("Internal error"),
+					Content:     errResp,
+				}},
 			}),
 		},
 	})
 
-	// /openapi.json
+	// ---- /openapi.json
+	// We return the OpenAPI document itself (raw), so we just describe it as "object".
 	spec.Paths.Set("/openapi.json", &openapi3.PathItem{
 		Get: &openapi3.Operation{
 			Summary:     "OpenAPI schema",
 			OperationID: "getOpenAPI",
 			Responses: newResponses(map[string]*openapi3.ResponseRef{
-				"200": {
-					Value: &openapi3.Response{
-						Description: ptrString("OK"),
-						Content:     jsonContent("APIResponse_OpenAPI"),
+				"200": {Value: &openapi3.Response{
+					Description: ptrString("OK"),
+					Content: openapi3.Content{
+						"application/json": &openapi3.MediaType{
+							Schema: &openapi3.SchemaRef{Value: openapi3.NewObjectSchema()},
+						},
 					},
-				},
+				}},
 			}),
 		},
 	})
@@ -293,14 +259,8 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 	if err := spec.Validate(context.Background()); err != nil {
 		return nil, err
 	}
-
 	return spec, nil
 }
 
-func ptrString(v string) *string {
-	return &v
-}
-
-func ptrBool(v bool) *bool {
-	return &v
-}
+func ptrString(v string) *string { return &v }
+func ptrBool(v bool) *bool       { return &v }

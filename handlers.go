@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/rs/cors"
 )
 
 type Server struct {
@@ -40,9 +42,25 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /status", s.handleStatus)
 	mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 
-	h := withRequestLogging(mux, s.logger)
+	h := http.Handler(mux)
+	h = withRequestLogging(mux, s.logger)
 	h = withRecovery(h, s.logger)
-	return h
+
+	c := cors.New(cors.Options{
+		AllowedOrigins: []string{
+			"*",
+		},
+		AllowedMethods: []string{"GET", "OPTIONS"},
+		AllowedHeaders: []string{
+			"Accept",
+			"Authorization",
+			"Content-Type",
+			"X-Requested-With",
+		},
+		MaxAge: 300,
+	})
+
+	return c.Handler(h)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {

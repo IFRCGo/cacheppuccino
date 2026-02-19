@@ -4,6 +4,7 @@ go 1.23.0
 
 require (
 	github.com/getkin/kin-openapi v0.130.0
+	github.com/rs/cors v1.11.1
 	github.com/uptrace/bun v1.2.15
 	github.com/uptrace/bun/dialect/sqlitedialect v1.2.15
 	github.com/uptrace/bun/driver/sqliteshim v1.2.15

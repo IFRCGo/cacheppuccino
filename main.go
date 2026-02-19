@@ -50,7 +50,7 @@ func main() {
 		slog.String("addr", cfg.ListenAddr),
 		slog.String("pull_interval", cfg.PullInterval.String()),
 		slog.String("http_timeout", cfg.HTTPTimeout.String()),
-		slog.String("initial_pull_timeline", cfg.PullInterval.String()),
+		slog.String("initial_pull_deadline", cfg.InitialPullDeadline.String()),
 	)
 
 	httpServer := &http.Server{
