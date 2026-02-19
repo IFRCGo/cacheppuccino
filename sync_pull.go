@@ -63,7 +63,6 @@ func PullOnce(
 	client *TranslationClient,
 	applicationID string,
 ) (PullResult, error) {
-
 	xlsx, err := client.DownloadXLSX(ctx, applicationID)
 	if err != nil {
 		return PullResult{}, err
@@ -110,15 +109,48 @@ func StartPeriodicPuller(
 	db *DB,
 	client *TranslationClient,
 	interval time.Duration,
+	initialDeadline time.Duration,
 	applicationID string,
 	ready *ReadyState,
 	logger *slog.Logger,
 ) {
 	jitterMax := time.Duration(float64(interval) * 0.10)
-
 	ticker := time.NewTicker(interval)
+
 	go func() {
 		defer ticker.Stop()
+
+		// Immediate pull on startup (async; does not block HTTP server startup)
+		func() {
+			logger.Info("initial pull started")
+
+			pullCtx := ctx
+			cancel := func() {}
+			if initialDeadline > 0 {
+				pullCtx, cancel = context.WithTimeout(ctx, initialDeadline)
+			}
+			defer cancel()
+
+			res, err := PullOnce(pullCtx, db, client, applicationID)
+			if err != nil {
+				if logger != nil {
+					logger.Warn("initial pull failed; service remains unready until a pull succeeds", "err", err)
+				}
+				return
+			}
+
+			if ready != nil {
+				ready.SetReady(true)
+			}
+
+			if logger != nil {
+				if res.Skipped {
+					logger.Info("initial pull unchanged", slog.String("hash", res.Hash))
+				} else {
+					logger.Info("initial pull imported", slog.Int("rows", res.Rows), slog.String("hash", res.Hash))
+				}
+			}
+		}()
 
 		for {
 			select {
