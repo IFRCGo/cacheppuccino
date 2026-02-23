@@ -121,7 +121,7 @@ jobs:
           else
             # Unique semver prerelease for main pushes
             SHORT_SHA="$(echo "${GITHUB_SHA}" | cut -c1-7)"
-            VERSION="0.0.0-dev.${SHORT_SHA}"
+            VERSION="0.1.0-${SHORT_SHA}"
           fi
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"

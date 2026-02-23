@@ -1,16 +1,18 @@
 services:
   cacheppuccino:
     build: .
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     ports:
       - "8080:8080"
-    dns:
-      - 8.8.8.8
-    user: "0:0"
+# user: "0:0"
     environment:
       TRANSLATION_BASE_URL: ${TRANSLATION_BASE_URL}
       TRANSLATION_APPLICATION_ID: ${TRANSLATION_APPLICATION_ID}
       TRANSLATION_API_KEY: ${TRANSLATION_API_KEY}
       SQLITE_PATH: "/data/cacheppuccino.db"
+      SQLITE_TMP_DIR: "/data/tmp"
       PULL_INTERVAL: ${PULL_INTERVAL:-10m}
       HTTP_TIMEOUT: ${HTTP_TIMEOUT:-30s}
       INITIAL_PULL_DEADLINE: ${INITIAL_PULL_DEADLINE:-45s}
@@ -22,8 +24,12 @@ services:
     healthcheck:
       test: ["CMD", "/cacheppuccino", "--healthcheck"]
       interval: 30s
-      timeout: 3s
+      timeout: 10s
       retries: 3
+    develop:
+      watch:
+        - path: .
+          action: rebuild
 
 volumes:
   cacheppuccino_data:

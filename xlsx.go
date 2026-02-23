@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -110,10 +111,5 @@ func ParseXLSX(xlsx []byte) ([]StringRow, error) {
 }
 
 func sheetExists(f *excelize.File, name string) bool {
-	for _, s := range f.GetSheetList() {
-		if s == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(f.GetSheetList(), name)
 }
