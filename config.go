@@ -27,7 +27,7 @@ func LoadConfig() Config {
 		TranslationAPIKey:        mustEnv("TRANSLATION_API_KEY"),
 		HTTPTimeout:              envDuration("HTTP_TIMEOUT", 30*time.Second),
 		PullInterval:             envDuration("PULL_INTERVAL", 10*time.Minute),
-		InitialPullDeadline:      envDuration("INITIAL_PULL_DEADLINE", 45*time.Second),
+		InitialPullDeadline:      envDuration("INITIAL_PULL_DEADLINE", 60*time.Second),
 		LogLevel:                 env("LOG_LEVEL", "info"),
 	}
 }

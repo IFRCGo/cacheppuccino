@@ -1,0 +1,17 @@
+{{- if and .Values.enabled .Values.sqlite.enabled (not .Values.sqlite.existingClaim) -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "cacheppuccino.fullname" . }}
+  labels:
+    {{- include "cacheppuccino.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.sqlite.pvc.storageClassName }}
+  storageClassName: {{ .Values.sqlite.pvc.storageClassName | quote }}
+  {{- end }}
+  accessModes:
+    {{- toYaml .Values.sqlite.pvc.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.sqlite.pvc.size | quote }}
+{{- end }}

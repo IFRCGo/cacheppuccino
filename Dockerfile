@@ -1,6 +1,10 @@
 # -------- build stage --------
 FROM golang:1.23 AS build
 
+ENV CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64
+
 WORKDIR /src
 
 COPY go.mod go.sum ./
@@ -8,11 +12,14 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags="-s -w" -o /out/cacheppuccino .
+RUN go build -trimpath -ldflags="-s -w" -o /out/cacheppuccino .
 
 # -------- runtime stage --------
-FROM gcr.io/distroless/static-debian12:nonroot
+
+FROM gcr.io/distroless/static-debian12
+
+# FROM alpine:3.21
+# RUN apk add --no-cache ca-certificates && update-ca-certificates
 
 WORKDIR /
 COPY --from=build /out/cacheppuccino /cacheppuccino
