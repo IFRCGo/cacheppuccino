@@ -21,13 +21,13 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: {{ include "cacheppuccino.fullname" $ }}
+                name: {{ include "cacheppuccino.fullname" . }}
                 port:
                   number: 8080
   {{- if .Values.ingress.tls.enabled }}
-    tls:
-      - hosts:
-        - {{ .Values.ingress.host }}
-        secretName: {{ .Values.ingress.tls.secretName }}
+  tls:
+    - secretName: {{ required "ingress.tls.secretName" .Values.ingress.tls.secretName }}
+      hosts:
+        - {{ .Values.ingress.host | quote }}
   {{- end }}
 {{- end }}
