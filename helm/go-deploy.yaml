@@ -1,0 +1,37 @@
+fullnameOverride: ifrcgo-cacheppuccino
+ingress:
+  enabled: true
+  host: cacheppuccino-stage.ifrc.org
+  className: nginx
+  tls:
+    enabled: true
+    # secretName: cacheppuccino-helm-secret-cert # XXX: go-deploy
+
+env:
+  TRANSLATION_BASE_URL: "https://ifrc-translationapi.azurewebsites.net"
+  TRANSLATION_APPLICATION_ID: "18"
+
+sqlite:
+  pvc:
+    size: 512Mi
+
+serviceAccount:
+  create: true
+  annotations:
+    azure.workload.identity/client-id: ""
+
+podLabels:
+  azure.workload.identity/use: "true"
+
+# Azure Key Vault CSI Driver
+secretsStoreCsiDriver:
+  enabled: true
+  provider: azure
+  parameters:
+    usePodIdentity: "false"
+    useVMManagedIdentity: "false"
+    clientID: ""
+    keyvaultName: ""
+    tenantId: ""
+  secretsKeyMap:
+    TRANSLATION_API_KEY: "TRANSLATION-API-KEY"

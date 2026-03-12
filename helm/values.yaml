@@ -60,26 +60,6 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
-app:
-  listenAddr: ":8080"
-  logLevel: info
-
-  translation:
-    baseUrl: ""
-    applicationId: ""
-    # if provided, chart will create a Secret (unless existingSecret is set)
-    apiKey: ""
-
-    # prefer using an existing Secret (e.g., ExternalSecrets)
-    existingSecret:
-      name: ""
-      key: "TRANSLATION_API_KEY"
-
-  pull:
-    interval: "10m"
-    httpTimeout: "30s"
-    initialPullDeadline: "45s"
-
 sqlite:
   enabled: true
   mountPath: /data
@@ -94,9 +74,20 @@ sqlite:
       - ReadWriteOnce
     size: 500Mi
 
+env:
+  LISTEN_ADDR: ":8080"
+  LOG_LEVEL: "info"
+  TRANSLATION_BASE_URL: ""
+  TRANSLATION_APPLICATION_ID: ""
+  PULL_INTERVAL: "10m"
+  HTTP_TIMEOUT: "30s"
+  INITIAL_PULL_DEADLINE: "45s"
+
+secrets: {}
+
 # Azure Key Vault CSI Driver
 secretsStoreCsiDriver:
-  create: false
+  enabled: false
   provider: azure
 
   # optional overrides
@@ -109,5 +100,5 @@ secretsStoreCsiDriver:
     clientID: ""
     keyvaultName: ""
     tenantId: ""
-  secretsKeyMap: {}
-    # TRANSLATION_API_KEY: "TRANSLATION-API-KEY"
+  secretsKeyMap:
+    TRANSLATION_API_KEY: "TRANSLATION-API-KEY"
