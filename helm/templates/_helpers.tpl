@@ -31,3 +31,19 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "cacheppuccino.secretProviderName" -}}
+{{- if .Values.secretsStoreCsiDriver.secretProviderClassName -}}
+{{- .Values.secretsStoreCsiDriver.secretProviderClassName -}}
+{{- else -}}
+{{- printf "%s-secret-provider" (include "cacheppuccino.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "cacheppuccino.secretName" -}}
+{{- if .Values.secretsStoreCsiDriver.secretName -}}
+{{- .Values.secretsStoreCsiDriver.secretName -}}
+{{- else -}}
+{{- printf "%s-vault-secret" (include "cacheppuccino.fullname" .) -}}
+{{- end -}}
+{{- end -}}

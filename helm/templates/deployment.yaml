@@ -46,7 +46,7 @@ spec:
             - name: TRANSLATION_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ default (include "cacheppuccino.fullname" .) .Values.app.translation.existingSecret.name }}
+                  name: {{ default (include "cacheppuccino.secretName" .) .Values.app.translation.existingSecret.name }}
                   key: {{ .Values.app.translation.existingSecret.key | quote }}
           {{- with .Values.securityContext }}
           securityContext:
@@ -75,11 +75,24 @@ spec:
             - name: sqlite
               mountPath: {{ .Values.sqlite.mountPath | quote }}
             {{- end }}
+            {{- if .Values.secretsStoreCsiDriver.create }}
+            - name: secrets-store
+              mountPath: "/mnt/secrets-store"
+              readOnly: true
+            {{- end }}
       volumes:
         {{- if .Values.sqlite.enabled }}
         - name: sqlite
           persistentVolumeClaim:
             claimName: {{ default (include "cacheppuccino.fullname" .) .Values.sqlite.existingClaim }}
+        {{- end }}
+        {{- if .Values.secretsStoreCsiDriver.create }}
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{ include "cacheppuccino.secretProviderName" . }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

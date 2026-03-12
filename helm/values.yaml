@@ -93,3 +93,21 @@ sqlite:
     accessModes:
       - ReadWriteOnce
     size: 500Mi
+
+# Azure Key Vault CSI Driver
+secretsStoreCsiDriver:
+  create: false
+  provider: azure
+
+  # optional overrides
+  secretProviderClassName: ""
+  secretName: ""
+
+  parameters:
+    usePodIdentity: "false"
+    useVMManagedIdentity: "false"
+    clientID: ""
+    keyvaultName: ""
+    tenantId: ""
+  secretsKeyMap: {}
+    # TRANSLATION_API_KEY: "TRANSLATION-API-KEY"
