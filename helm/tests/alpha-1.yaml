@@ -1,0 +1,25 @@
+# Values for alpha instance
+ingress:
+  enabled: true
+  host: cacheppuccino-alpha-1.ifrc-go.dev.togglecorp.com
+
+resources:
+  requests:
+    cpu: "0.2"
+    memory: 512Mi
+  limits:
+    cpu: 2
+    memory: 512Mi
+
+sqlite:
+  pvc:
+    storageClassName: "longhorn"
+    size: 512Mi
+app:
+  translation:
+    baseUrl: "https://ifrc-translationapi.azurewebsites.net"
+    applicationId: "18"
+    apiKey: "test"
+  pull:
+    httpTimeout: "1m"
+    initialPullDeadline: "2m"

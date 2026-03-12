@@ -1,0 +1,3 @@
+tests:
+  alpha-1.yaml:
+    - values.yaml
