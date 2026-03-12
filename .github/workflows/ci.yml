@@ -16,7 +16,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@main
+        with:
+          submodules: true
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -59,7 +61,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@main
+        with:
+          submodules: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -102,7 +106,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@main
+        with:
+          submodules: true
 
       - name: Setup Helm
         uses: azure/setup-helm@v4
@@ -133,6 +139,9 @@ jobs:
 
       - name: Lint chart
         run: helm lint helm
+
+      - name: 🐳 Helm template (snapshot)
+        run: ./helm/update-snapshots.sh --check-diff-only
 
       - name: Tag docker image in Helm Chart values.yaml
         working-directory: helm
