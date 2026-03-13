@@ -100,5 +100,5 @@ secretsStoreCsiDriver:
     clientID: ""
     keyvaultName: ""
     tenantId: ""
-  secretsKeyMap:
-    TRANSLATION_API_KEY: "TRANSLATION-API-KEY"
+  secretsKeyMap: {}
+    # TRANSLATION_API_KEY: "TRANSLATION-API-KEY"

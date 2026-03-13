@@ -1,11 +1,12 @@
 fullnameOverride: ifrcgo-cacheppuccino
+
 ingress:
   enabled: true
   host: cacheppuccino-stage.ifrc.org
   className: nginx
   tls:
     enabled: true
-    # secretName: cacheppuccino-helm-secret-cert # XXX: go-deploy
+    secretName: cacheppuccino-helm-secret-cert
 
 env:
   TRANSLATION_BASE_URL: "https://ifrc-translationapi.azurewebsites.net"

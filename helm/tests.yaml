@@ -1,3 +1,5 @@
 tests:
-  alpha-1.yaml:
-    - values.yaml
+  alpha-1.yaml: []
+  staging.yaml:
+    - values/go-deploy.yaml
+    - values/staging.yaml
