@@ -25,17 +25,14 @@ metadata:
     app.kubernetes.io/version: "0.1.0"
     app.kubernetes.io/managed-by: Helm
 data:
-  LISTEN_ADDR: ":8080"
-  LOG_LEVEL: "info"
-
-  TRANSLATION_BASE_URL: "https://ifrc-test-translationapi.azurewebsites.net"
-  TRANSLATION_APPLICATION_ID: "18"
-
-  PULL_INTERVAL: "10m"
+  SQLITE_PATH: "/data/cacheppuccino.db"
   HTTP_TIMEOUT: "30s"
   INITIAL_PULL_DEADLINE: "45s"
-
-  SQLITE_PATH: "/data/cacheppuccino.db"
+  LISTEN_ADDR: ":8080"
+  LOG_LEVEL: "info"
+  PULL_INTERVAL: "10m"
+  TRANSLATION_APPLICATION_ID: "18"
+  TRANSLATION_BASE_URL: "https://ifrc-test-translationapi.azurewebsites.net"
 ---
 # Source: cacheppuccino-helm/templates/pvc.yaml
 apiVersion: v1

@@ -6,15 +6,10 @@ metadata:
   labels:
     {{- include "cacheppuccino.labels" . | nindent 4 }}
 data:
-  LISTEN_ADDR: {{ .Values.env.LISTEN_ADDR | quote }}
-  LOG_LEVEL: {{ .Values.env.LOG_LEVEL | quote }}
-
-  TRANSLATION_BASE_URL: {{ .Values.env.TRANSLATION_BASE_URL | quote }}
-  TRANSLATION_APPLICATION_ID: {{ .Values.env.TRANSLATION_APPLICATION_ID | quote }}
-
-  PULL_INTERVAL: {{ .Values.env.PULL_INTERVAL | quote }}
-  HTTP_TIMEOUT: {{ .Values.env.HTTP_TIMEOUT | quote }}
-  INITIAL_PULL_DEADLINE: {{ .Values.env.INITIAL_PULL_DEADLINE | quote }}
-
+  {{- if .Values.sqlite.enabled }}
   SQLITE_PATH: {{ printf "%s/%s" .Values.sqlite.mountPath .Values.sqlite.filename | quote }}
+  {{- end }}
+  {{- range $name, $value := .Values.env }}
+  {{ $name }}: {{ tpl $value $ | quote }}
+  {{- end }}
 {{- end }}
