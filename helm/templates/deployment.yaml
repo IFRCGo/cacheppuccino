@@ -3,6 +3,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "cacheppuccino.fullname" . }}
+  annotations:
+    reloader.stakater.com/auto: "true"
   labels:
     {{- include "cacheppuccino.labels" . | nindent 4 }}
 spec:
@@ -42,12 +44,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "cacheppuccino.fullname" . }}
-          env:
-            - name: TRANSLATION_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ default (include "cacheppuccino.fullname" .) .Values.app.translation.existingSecret.name }}
-                  key: {{ .Values.app.translation.existingSecret.key | quote }}
+            - secretRef:
+                name: {{ include "cacheppuccino.secretName" . }}
           {{- with .Values.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
@@ -75,11 +73,24 @@ spec:
             - name: sqlite
               mountPath: {{ .Values.sqlite.mountPath | quote }}
             {{- end }}
+            {{- if .Values.secretsStoreCsiDriver.enabled }}
+            - name: secrets-store
+              mountPath: "/mnt/secrets-store"
+              readOnly: true
+            {{- end }}
       volumes:
         {{- if .Values.sqlite.enabled }}
         - name: sqlite
           persistentVolumeClaim:
             claimName: {{ default (include "cacheppuccino.fullname" .) .Values.sqlite.existingClaim }}
+        {{- end }}
+        {{- if .Values.secretsStoreCsiDriver.enabled }}
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{ include "cacheppuccino.secretProviderName" . }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
