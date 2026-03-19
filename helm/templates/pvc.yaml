@@ -10,7 +10,7 @@ spec:
   storageClassName: {{ .Values.sqlite.pvc.storageClassName | quote }}
   {{- end }}
   accessModes:
-    {{- toYaml .Values.sqlite.pvc.accessModes | nindent 4 }}
+    - ReadWriteOnce
   resources:
     requests:
       storage: {{ .Values.sqlite.pvc.size | quote }}
