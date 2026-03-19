@@ -11,6 +11,8 @@ ingress:
 sqlite:
   pvc:
     size: 512Mi
+    accessModes:
+      - ReadWriteMany
 
 serviceAccount:
   create: true

@@ -47,7 +47,7 @@ metadata:
     app.kubernetes.io/managed-by: Helm
 spec:
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteMany
   resources:
     requests:
       storage: "512Mi"
