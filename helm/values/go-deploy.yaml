@@ -11,6 +11,7 @@ ingress:
 sqlite:
   pvc:
     size: 512Mi
+    storageClassName: azurefile-csi
     accessModes:
       - ReadWriteMany
 
