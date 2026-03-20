@@ -158,7 +158,7 @@ jobs:
           mkdir -p dist
           helm package helm \
             --destination dist \
-            --version "${{ steps.ver.outputs.version }}"
+            --version "${{ steps.ver.outputs.version }}" \
             --app-version "${{ steps.ver.outputs.version }}"
 
       - name: Push chart to GHCR (OCI)
