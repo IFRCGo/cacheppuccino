@@ -1,0 +1,22 @@
+# NOTE: test data for production, using values production.yaml
+ingress:
+  host: cacheppuccino-test-prod.ifrc.org
+  className: nginx
+  tls:
+    enabled: true
+    secretName: cacheppuccino-helm-secret-cert-test
+env:
+  TRANSLATION_BASE_URL: "https://ifrc-test-translationapi.azurewebsites.net"
+  TRANSLATION_APPLICATION_ID: "18"
+
+serviceAccount:
+  annotations:
+    azure.workload.identity/client-id: "test_id"
+
+secretsStoreCsiDriver:
+  parameters:
+    clientID: "test_client_id"
+    keyvaultName: "test_key_vault_name"
+    tenantId: "test_tenant_id"
+  secretsKeyMap:
+    TRANSLATION_API_KEY: "TRANSLATION-API-KEY"
