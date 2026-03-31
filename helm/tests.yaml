@@ -3,3 +3,6 @@ tests:
   staging.yaml:
     - values/go-deploy.yaml
     - values/staging.yaml
+  production.yaml:
+    - values/go-deploy.yaml
+    - values/production.yaml
