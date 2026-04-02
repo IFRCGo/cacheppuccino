@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -15,7 +16,31 @@ import (
 
 func main() {
 	healthcheck := flag.Bool("healthcheck", false, "run a quick health probe and exit")
+	schema := flag.Bool("schema", false, "generate a openapi.json file and exit")
+
 	flag.Parse()
+
+	if *schema {
+		openapiSchema, err := buildOpenAPISpec("/")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+
+		// Convert to JSON bytes
+		fileData, jsonErr := json.MarshalIndent(openapiSchema, "", "  ")
+		if jsonErr != nil {
+			fmt.Fprintln(os.Stderr, jsonErr.Error())
+			os.Exit(1)
+		}
+
+		fileErr := os.WriteFile("openapi.json", fileData, 0644)
+		if fileErr != nil {
+			fmt.Fprintln(os.Stderr, fileErr.Error())
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	cfg := LoadConfig()
 	logger := newLogger(cfg.LogLevel)
