@@ -149,6 +149,12 @@ curl http://localhost:8080/openapi.json
 
 The schema is generated dynamically using kin-openapi based on Go structs.
 
+### Generate `openapi.json` using commandline
+
+```bash
+go run . --schema
+```
+
 
 ## Database
 

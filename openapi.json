@@ -1,0 +1,327 @@
+{
+  "info": {
+    "title": "cacheppuccino",
+    "version": "0.1.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/healthz": {
+      "get": {
+        "operationId": "getHealthz",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "nullable": true,
+                      "properties": {
+                        "status": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "description": ""
+          }
+        },
+        "summary": "Liveness endpoint"
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "getOpenAPI",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "description": ""
+          }
+        },
+        "summary": "OpenAPI schema"
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "getReadyz",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "nullable": true,
+                      "properties": {
+                        "status": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Ready"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "nullable": true,
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "details": {
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Not ready"
+          },
+          "default": {
+            "description": ""
+          }
+        },
+        "summary": "Readiness endpoint"
+      }
+    },
+    "/status": {
+      "get": {
+        "operationId": "getStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "nullable": true,
+                      "properties": {
+                        "last_hash": {
+                          "type": "string"
+                        },
+                        "last_pull": {
+                          "type": "string"
+                        },
+                        "ready": {
+                          "type": "boolean"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "description": ""
+          }
+        },
+        "summary": "Service status"
+      }
+    },
+    "/strings": {
+      "get": {
+        "operationId": "getStrings",
+        "parameters": [
+          {
+            "description": "Language code (e.g. en, fr, es).",
+            "example": "en",
+            "in": "query",
+            "name": "lang",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Repeatable page param. Example: /strings?page=home\u0026page=about\u0026lang=en",
+            "example": "home",
+            "explode": true,
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "description": "Comma-separated pages. Example: /strings?pages=home,about\u0026lang=en",
+            "example": "home,about",
+            "in": "query",
+            "name": "pages",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "nullable": true,
+                      "properties": {
+                        "lang": {
+                          "type": "string"
+                        },
+                        "pages": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "strings": {
+                          "additionalProperties": {
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "type": "object"
+                          },
+                          "type": "object"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "nullable": true,
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "details": {
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "nullable": true,
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "details": {
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal error"
+          },
+          "default": {
+            "description": ""
+          }
+        },
+        "summary": "Get strings for one or more pages in a given language"
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ]
+}
