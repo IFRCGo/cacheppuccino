@@ -1,6 +1,8 @@
 # -------- build stage --------
 FROM golang:1.23 AS build
 
+ARG VERSION=dev
+
 ENV CGO_ENABLED=0 \
     GOOS=linux \
     GOARCH=amd64
@@ -12,7 +14,7 @@ RUN go mod download
 
 COPY . .
 
-RUN go build -trimpath -ldflags="-s -w" -o /out/cacheppuccino .
+RUN go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/cacheppuccino .
 
 # -------- runtime stage --------
 

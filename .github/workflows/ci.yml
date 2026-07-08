@@ -43,6 +43,9 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Test
+        run: go test ./...
+
       - name: Build
         run: go build -trimpath -ldflags="-s -w" -o cacheppuccino .
 
@@ -84,6 +87,22 @@ jobs:
             type=sha,format=short,prefix=0.1.0-c
             type=ref,event=tag
 
+      - name: Determine build version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            # Tag format: v0.1.0 -> 0.1.0
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            SHORT_SHA="$(echo "${GITHUB_SHA}" | cut -c1-7)"
+            VERSION="0.1.0-c${SHORT_SHA}"
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push docker image
         uses: docker/build-push-action@v6
         with:
@@ -91,6 +110,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
   helm:

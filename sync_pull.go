@@ -30,18 +30,8 @@ func (c *TranslationClient) DownloadXLSX(
 	applicationID string,
 	logger *slog.Logger,
 ) ([]byte, error) {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	if c == nil {
-		return nil, fmt.Errorf("translation client is nil")
-	}
-	if c.baseURL == "" {
-		return nil, fmt.Errorf("translation base URL is empty")
-	}
-
 	url := fmt.Sprintf("%s/api/Application/%s/Translation/export", c.baseURL, applicationID)
-	logger.Info("Requesting export", slog.String("url", url))
+	logger.Info("pull: requesting export", slog.String("url", url))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -52,24 +42,11 @@ func (c *TranslationClient) DownloadXLSX(
 		req.Header.Set("X-API-KEY", c.apiKey)
 	}
 
-	hc := c.http
-	if hc == nil {
-		hc = http.DefaultClient
-	}
-
-	resp, err := hc.Do(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
-		// resp can be nil on network errors; don't touch it
 		return nil, fmt.Errorf("export request failed: %w", err)
 	}
 	defer resp.Body.Close()
-
-	logger.Info(
-		"Export request complete",
-		slog.Int("status", resp.StatusCode),
-		slog.String("cl", resp.Header.Get("Content-Length")),
-		slog.String("ct", resp.Header.Get("Content-Type")),
-	)
 
 	if resp.StatusCode/100 != 2 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
@@ -94,47 +71,39 @@ func PullOnce(
 ) (PullResult, error) {
 	t0 := time.Now()
 
-	logger.Info("pull: download start")
 	xlsx, err := client.DownloadXLSX(ctx, applicationID, logger)
-	logger.Info("pull: download done", slog.Duration("dur", time.Since(t0)), slog.Int("bytes", len(xlsx)))
-
 	if err != nil {
 		return PullResult{}, err
 	}
+	logger.Info("pull: download done", slog.Duration("dur", time.Since(t0)), slog.Int("bytes", len(xlsx)))
 
 	hash := HashBytes(xlsx)
 
-	prev, ok, err := db.GetMeta(ctx, "last_xlsx_sha256")
+	prev, ok, err := db.GetMeta(ctx, metaKeyLastHash)
 	if err != nil {
 		return PullResult{}, err
 	}
 
 	if ok && prev == hash {
+		// Content unchanged; still record that a pull succeeded.
+		if err := db.SetMeta(ctx, metaKeyLastPull, time.Now().UTC().Format(time.RFC3339)); err != nil {
+			return PullResult{}, err
+		}
 		return PullResult{Skipped: true, Hash: hash, Rows: 0}, nil
 	}
 
 	t1 := time.Now()
 	rows, err := ParseXLSX(xlsx)
-	logger.Info("pull: parse done", slog.Duration("dur", time.Since(t1)), slog.Int("rows", len(rows)))
 	if err != nil {
 		return PullResult{}, err
 	}
+	logger.Info("pull: parse done", slog.Duration("dur", time.Since(t1)), slog.Int("rows", len(rows)))
 
 	t2 := time.Now()
-	if err := db.UpsertStringsFromRows(ctx, rows); err != nil {
+	if err := db.ReplaceImport(ctx, rows, hash, time.Now()); err != nil {
 		return PullResult{}, err
 	}
-	logger.Info("pull: upsert done", slog.Duration("dur", time.Since(t2)))
-
-	err = db.SetMeta(ctx, "last_xlsx_sha256", hash)
-	if err != nil {
-		return PullResult{}, err
-	}
-
-	err = db.SetMeta(ctx, "last_pull_rfc3339", time.Now().UTC().Format(time.RFC3339))
-	if err != nil {
-		return PullResult{}, err
-	}
+	logger.Info("pull: import done", slog.Duration("dur", time.Since(t2)))
 
 	return PullResult{Skipped: false, Hash: hash, Rows: len(rows)}, nil
 }
@@ -152,6 +121,14 @@ func StartPeriodicPuller(
 	jitterMax := time.Duration(float64(interval) * 0.10)
 	ticker := time.NewTicker(interval)
 
+	logPull := func(kind string, res PullResult) {
+		if res.Skipped {
+			logger.Info(kind+" pull unchanged", slog.String("hash", res.Hash))
+		} else {
+			logger.Info(kind+" pull imported", slog.Int("rows", res.Rows), slog.String("hash", res.Hash))
+		}
+	}
+
 	go func() {
 		defer ticker.Stop()
 
@@ -168,23 +145,12 @@ func StartPeriodicPuller(
 
 			res, err := PullOnce(pullCtx, db, client, applicationID, logger)
 			if err != nil {
-				if logger != nil {
-					logger.Warn("initial pull failed; service remains unready until a pull succeeds", "err", err)
-				}
+				logger.Warn("initial pull failed; service stays unready unless it already has data", "err", err)
 				return
 			}
 
-			if ready != nil {
-				ready.SetReady(true)
-			}
-
-			if logger != nil {
-				if res.Skipped {
-					logger.Info("initial pull unchanged", slog.String("hash", res.Hash))
-				} else {
-					logger.Info("initial pull imported", slog.Int("rows", res.Rows), slog.String("hash", res.Hash))
-				}
-			}
+			ready.SetReady(true)
+			logPull("initial", res)
 		}()
 
 		for {
@@ -205,23 +171,12 @@ func StartPeriodicPuller(
 
 				res, err := PullOnce(ctx, db, client, applicationID, logger)
 				if err != nil {
-					if logger != nil {
-						logger.Warn("periodic pull failed", "err", err)
-					}
+					logger.Warn("periodic pull failed", "err", err)
 					continue
 				}
 
-				if ready != nil {
-					ready.SetReady(true)
-				}
-
-				if logger != nil {
-					if res.Skipped {
-						logger.Info("periodic pull unchanged", slog.String("hash", res.Hash))
-					} else {
-						logger.Info("periodic pull imported", slog.Int("rows", res.Rows), slog.String("hash", res.Hash))
-					}
-				}
+				ready.SetReady(true)
+				logPull("periodic", res)
 			}
 		}
 	}()
