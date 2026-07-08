@@ -159,14 +159,21 @@ func newLogger(level string) *slog.Logger {
 	return slog.New(h)
 }
 
-// healthcheckURL derives the local probe URL from LISTEN_ADDR,
-// which may be ":8080", "0.0.0.0:8080", or "host:8080".
+// healthcheckURL derives the probe URL from LISTEN_ADDR. The probe runs
+// inside the same container as the server (the distroless image has no
+// curl, so the binary probes itself): wildcard binds (":8080",
+// "0.0.0.0:8080", "[::]:8080") are reachable via loopback, while an
+// explicit bind host must be probed directly.
 func healthcheckURL(listenAddr string) (string, error) {
-	_, port, err := net.SplitHostPort(listenAddr)
+	host, port, err := net.SplitHostPort(listenAddr)
 	if err != nil {
 		return "", fmt.Errorf("invalid LISTEN_ADDR %q: %w", listenAddr, err)
 	}
-	return "http://127.0.0.1:" + port + "/healthz", nil
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/healthz", nil
 }
 
 func doHealthcheck(url string) error {

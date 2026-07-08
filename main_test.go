@@ -8,10 +8,13 @@ func TestHealthcheckURL(t *testing.T) {
 		want       string
 		wantErr    bool
 	}{
+		// Wildcard binds are probed via loopback.
 		{listenAddr: ":8080", want: "http://127.0.0.1:8080/healthz"},
 		{listenAddr: "0.0.0.0:8080", want: "http://127.0.0.1:8080/healthz"},
+		{listenAddr: "[::]:8080", want: "http://127.0.0.1:8080/healthz"},
+		// Explicit bind hosts are probed directly.
 		{listenAddr: "127.0.0.1:9999", want: "http://127.0.0.1:9999/healthz"},
-		{listenAddr: "somehost:8081", want: "http://127.0.0.1:8081/healthz"},
+		{listenAddr: "somehost:8081", want: "http://somehost:8081/healthz"},
 		{listenAddr: "8080", wantErr: true},
 		{listenAddr: "", wantErr: true},
 	}
