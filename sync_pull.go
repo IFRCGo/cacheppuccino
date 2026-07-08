@@ -9,28 +9,29 @@ import (
 	"time"
 )
 
+// TranslationClient fetches the XLSX export from the IFRC translation API.
 type TranslationClient struct {
-	baseURL string
-	apiKey  string
-	http    *http.Client
+	baseURL       string
+	applicationID string
+	apiKey        string
+	http          *http.Client
 }
 
 func NewTranslationClient(cfg Config) *TranslationClient {
 	return &TranslationClient{
-		baseURL: cfg.TranslationBaseURL,
-		apiKey:  cfg.TranslationAPIKey,
+		baseURL:       cfg.TranslationBaseURL,
+		applicationID: cfg.TranslationApplicationID,
+		apiKey:        cfg.TranslationAPIKey,
 		http: &http.Client{
 			Timeout: cfg.HTTPTimeout,
 		},
 	}
 }
 
-func (c *TranslationClient) DownloadXLSX(
-	ctx context.Context,
-	applicationID string,
-	logger *slog.Logger,
-) ([]byte, error) {
-	url := fmt.Sprintf("%s/api/Application/%s/Translation/export", c.baseURL, applicationID)
+func (c *TranslationClient) Name() string { return "api" }
+
+func (c *TranslationClient) Fetch(ctx context.Context, logger *slog.Logger) ([]byte, error) {
+	url := fmt.Sprintf("%s/api/Application/%s/Translation/export", c.baseURL, c.applicationID)
 	logger.Info("pull: requesting export", slog.String("url", url))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -53,7 +54,7 @@ func (c *TranslationClient) DownloadXLSX(
 		return nil, fmt.Errorf("download failed: %s: %s", resp.Status, string(b))
 	}
 
-	return io.ReadAll(resp.Body)
+	return readAllLimited(resp.Body, maxXLSXBytes)
 }
 
 type PullResult struct {
@@ -65,13 +66,12 @@ type PullResult struct {
 func PullOnce(
 	ctx context.Context,
 	db *DB,
-	client *TranslationClient,
-	applicationID string,
+	source XLSXSource,
 	logger *slog.Logger,
 ) (PullResult, error) {
 	t0 := time.Now()
 
-	xlsx, err := client.DownloadXLSX(ctx, applicationID, logger)
+	xlsx, err := source.Fetch(ctx, logger)
 	if err != nil {
 		return PullResult{}, err
 	}
@@ -111,17 +111,35 @@ func PullOnce(
 func StartPeriodicPuller(
 	ctx context.Context,
 	db *DB,
-	client *TranslationClient,
+	source XLSXSource,
 	interval time.Duration,
 	initialDeadline time.Duration,
-	applicationID string,
 	ready *ReadyState,
 	logger *slog.Logger,
 ) {
 	jitterMax := time.Duration(float64(interval) * 0.10)
 	ticker := time.NewTicker(interval)
 
-	logPull := func(kind string, res PullResult) {
+	// runPull records the outcome in meta so /status can report the most
+	// recent pull error without access to pod logs (QA has none).
+	runPull := func(pullCtx context.Context, kind string) {
+		res, err := PullOnce(pullCtx, db, source, logger)
+		if err != nil {
+			// Skip recording on shutdown; the parent ctx is the process ctx.
+			if ctx.Err() == nil {
+				if merr := db.SetMeta(ctx, metaKeyLastPullError, err.Error()); merr != nil {
+					logger.Warn("pull: failed to record pull error", "err", merr)
+				}
+			}
+			logger.Warn(kind+" pull failed; serving cached data if any", "err", err)
+			return
+		}
+
+		if merr := db.SetMeta(ctx, metaKeyLastPullError, ""); merr != nil {
+			logger.Warn("pull: failed to clear pull error", "err", merr)
+		}
+		ready.SetReady(true)
+
 		if res.Skipped {
 			logger.Info(kind+" pull unchanged", slog.String("hash", res.Hash))
 		} else {
@@ -134,7 +152,7 @@ func StartPeriodicPuller(
 
 		// Immediate pull on startup (async; does not block HTTP server startup)
 		func() {
-			logger.Info("initial pull started")
+			logger.Info("initial pull started", slog.String("source", source.Name()))
 
 			pullCtx := ctx
 			cancel := func() {}
@@ -143,14 +161,7 @@ func StartPeriodicPuller(
 			}
 			defer cancel()
 
-			res, err := PullOnce(pullCtx, db, client, applicationID, logger)
-			if err != nil {
-				logger.Warn("initial pull failed; service stays unready unless it already has data", "err", err)
-				return
-			}
-
-			ready.SetReady(true)
-			logPull("initial", res)
+			runPull(pullCtx, "initial")
 		}()
 
 		for {
@@ -169,14 +180,7 @@ func StartPeriodicPuller(
 					}
 				}
 
-				res, err := PullOnce(ctx, db, client, applicationID, logger)
-				if err != nil {
-					logger.Warn("periodic pull failed", "err", err)
-					continue
-				}
-
-				ready.SetReady(true)
-				logPull("periodic", res)
+				runPull(ctx, "periodic")
 			}
 		}
 	}()

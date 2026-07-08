@@ -57,7 +57,12 @@ func main() {
 	}
 	defer func() { _ = db.Close() }()
 
-	client := NewTranslationClient(cfg)
+	var source XLSXSource
+	if cfg.TranslationSource == sourceURL {
+		source = NewURLSource(cfg)
+	} else {
+		source = NewTranslationClient(cfg)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -72,11 +77,12 @@ func main() {
 	}
 	ready.SetReady(hasData)
 
-	srv := &Server{db: db, ready: ready, logger: logger}
+	srv := &Server{db: db, ready: ready, logger: logger, source: source.Name()}
 
 	logger.Info("cacheppuccino starting",
 		slog.String("version", version),
 		slog.String("addr", cfg.ListenAddr),
+		slog.String("source", source.Name()),
 		slog.Bool("has_data", hasData),
 		slog.String("pull_interval", cfg.PullInterval.String()),
 		slog.String("http_timeout", cfg.HTTPTimeout.String()),
@@ -107,10 +113,9 @@ func main() {
 	StartPeriodicPuller(
 		ctx,
 		db,
-		client,
+		source,
 		cfg.PullInterval,
 		cfg.InitialPullDeadline,
-		cfg.TranslationApplicationID,
 		ready,
 		logger,
 	)

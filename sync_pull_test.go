@@ -35,9 +35,10 @@ func stOpenDB(t *testing.T) *DB {
 
 func stClient(baseURL, apiKey string) *TranslationClient {
 	return NewTranslationClient(Config{
-		TranslationBaseURL: baseURL,
-		TranslationAPIKey:  apiKey,
-		HTTPTimeout:        5 * time.Second,
+		TranslationBaseURL:       baseURL,
+		TranslationApplicationID: "app-1",
+		TranslationAPIKey:        apiKey,
+		HTTPTimeout:              5 * time.Second,
 	})
 }
 
@@ -118,9 +119,9 @@ func TestTranslationClientDownloadXLSXRequestShape(t *testing.T) {
 			defer srv.Close()
 
 			client := stClient(srv.URL, tc.apiKey)
-			body, err := client.DownloadXLSX(context.Background(), "app-1", stLogger())
+			body, err := client.Fetch(context.Background(), stLogger())
 			if err != nil {
-				t.Fatalf("DownloadXLSX: %v", err)
+				t.Fatalf("Fetch: %v", err)
 			}
 			if string(body) != "body-bytes" {
 				t.Errorf("body = %q, want %q", body, "body-bytes")
@@ -178,7 +179,7 @@ func TestPullOnceFirstThenSkipThenReplace(t *testing.T) {
 	client := stClient(srv.URL, "secret")
 
 	// First pull: full import.
-	res1, err := PullOnce(ctx, db, client, "app-1", logger)
+	res1, err := PullOnce(ctx, db, client, logger)
 	if err != nil {
 		t.Fatalf("first PullOnce: %v", err)
 	}
@@ -234,7 +235,7 @@ func TestPullOnceFirstThenSkipThenReplace(t *testing.T) {
 		t.Fatalf("SetMeta: %v", err)
 	}
 
-	res2, err := PullOnce(ctx, db, client, "app-1", logger)
+	res2, err := PullOnce(ctx, db, client, logger)
 	if err != nil {
 		t.Fatalf("second PullOnce: %v", err)
 	}
@@ -269,7 +270,7 @@ func TestPullOnceFirstThenSkipThenReplace(t *testing.T) {
 	// Third pull with changed payload: full replacement, removed row gone.
 	setPayload(payload2)
 
-	res3, err := PullOnce(ctx, db, client, "app-1", logger)
+	res3, err := PullOnce(ctx, db, client, logger)
 	if err != nil {
 		t.Fatalf("third PullOnce: %v", err)
 	}
@@ -331,7 +332,7 @@ func TestPullOnceUpstreamHTTPError(t *testing.T) {
 
 	client := stClient(srv.URL, "secret")
 
-	res, err := PullOnce(ctx, db, client, "app-1", logger)
+	res, err := PullOnce(ctx, db, client, logger)
 	if err != nil {
 		t.Fatalf("seed PullOnce: %v", err)
 	}
@@ -340,7 +341,7 @@ func TestPullOnceUpstreamHTTPError(t *testing.T) {
 	fail = true
 	mu.Unlock()
 
-	_, err = PullOnce(ctx, db, client, "app-1", logger)
+	_, err = PullOnce(ctx, db, client, logger)
 	if err == nil {
 		t.Fatal("PullOnce on upstream 500: want error, got nil")
 	}
@@ -386,7 +387,7 @@ func TestPullOnceInvalidXLSXBody(t *testing.T) {
 
 	client := stClient(srv.URL, "secret")
 
-	res, err := PullOnce(ctx, db, client, "app-1", logger)
+	res, err := PullOnce(ctx, db, client, logger)
 	if err != nil {
 		t.Fatalf("seed PullOnce: %v", err)
 	}
@@ -395,7 +396,7 @@ func TestPullOnceInvalidXLSXBody(t *testing.T) {
 	junk = true
 	mu.Unlock()
 
-	_, err = PullOnce(ctx, db, client, "app-1", logger)
+	_, err = PullOnce(ctx, db, client, logger)
 	if err == nil {
 		t.Fatal("PullOnce on junk body: want parse error, got nil")
 	}
@@ -433,7 +434,7 @@ func TestPullOnceContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := PullOnce(ctx, db, client, "app-1", stLogger())
+	_, err := PullOnce(ctx, db, client, stLogger())
 	if err == nil {
 		t.Fatal("PullOnce with cancelled context: want error, got nil")
 	}

@@ -9,9 +9,11 @@ import (
 // ctAllConfigEnvVars is every env var LoadConfig reads. Each test sets all of
 // them explicitly ("" simulates unset) to shield tests from the host env.
 var ctAllConfigEnvVars = []string{
+	"TRANSLATION_SOURCE",
 	"TRANSLATION_BASE_URL",
 	"TRANSLATION_APPLICATION_ID",
 	"TRANSLATION_API_KEY",
+	"TRANSLATION_XLSX_URL",
 	"LISTEN_ADDR",
 	"SQLITE_PATH",
 	"HTTP_TIMEOUT",
@@ -72,6 +74,88 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if got, want := cfg.LogLevel, "info"; got != want {
 		t.Errorf("LogLevel = %q, want %q", got, want)
+	}
+	if got, want := cfg.TranslationSource, "api"; got != want {
+		t.Errorf("TranslationSource = %q, want %q", got, want)
+	}
+}
+
+func TestLoadConfigSourceMatrix(t *testing.T) {
+	tests := []struct {
+		name        string
+		env         map[string]string
+		wantErr     bool
+		wantInError []string
+	}{
+		{
+			name: "url mode requires only the xlsx url",
+			env: map[string]string{
+				"TRANSLATION_SOURCE":   "url",
+				"TRANSLATION_XLSX_URL": "https://files.example.com/translations.xlsx",
+			},
+		},
+		{
+			name:        "url mode without xlsx url fails",
+			env:         map[string]string{"TRANSLATION_SOURCE": "url"},
+			wantErr:     true,
+			wantInError: []string{"TRANSLATION_XLSX_URL"},
+		},
+		{
+			name: "url mode rejects non-http url",
+			env: map[string]string{
+				"TRANSLATION_SOURCE":   "url",
+				"TRANSLATION_XLSX_URL": "ftp://files.example.com/translations.xlsx",
+			},
+			wantErr:     true,
+			wantInError: []string{"TRANSLATION_XLSX_URL", "http(s)"},
+		},
+		{
+			name:        "invalid source value fails",
+			env:         map[string]string{"TRANSLATION_SOURCE": "s3"},
+			wantErr:     true,
+			wantInError: []string{"TRANSLATION_SOURCE", `"s3"`},
+		},
+		{
+			name: "api mode still requires the api trio",
+			env: map[string]string{
+				"TRANSLATION_SOURCE":   "api",
+				"TRANSLATION_XLSX_URL": "https://files.example.com/translations.xlsx",
+			},
+			wantErr: true,
+			wantInError: []string{
+				"TRANSLATION_BASE_URL",
+				"TRANSLATION_APPLICATION_ID",
+				"TRANSLATION_API_KEY",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctSetConfigEnv(t, tt.env)
+
+			cfg, err := LoadConfig()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("LoadConfig() error = nil, want error")
+				}
+				for _, want := range tt.wantInError {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q does not contain %q", err.Error(), want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadConfig() error = %v, want nil", err)
+			}
+			if cfg.TranslationSource != tt.env["TRANSLATION_SOURCE"] {
+				t.Errorf("TranslationSource = %q, want %q", cfg.TranslationSource, tt.env["TRANSLATION_SOURCE"])
+			}
+			if cfg.TranslationXLSXURL != tt.env["TRANSLATION_XLSX_URL"] {
+				t.Errorf("TranslationXLSXURL = %q, want %q", cfg.TranslationXLSXURL, tt.env["TRANSLATION_XLSX_URL"])
+			}
+		})
 	}
 }
 

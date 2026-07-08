@@ -77,6 +77,10 @@ sqlite:
 env:
   LISTEN_ADDR: ":8080"
   LOG_LEVEL: "info"
+  # api: pull from the IFRC translation service (needs TRANSLATION_BASE_URL,
+  #      TRANSLATION_APPLICATION_ID and the TRANSLATION_API_KEY secret).
+  # url: pull a plain XLSX file from TRANSLATION_XLSX_URL (QA/alpha mock).
+  TRANSLATION_SOURCE: "api"
   TRANSLATION_BASE_URL: ""
   TRANSLATION_APPLICATION_ID: ""
   PULL_INTERVAL: "10m"

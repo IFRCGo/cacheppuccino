@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,8 +17,10 @@ import (
 )
 
 const (
-	metaKeyLastPull = "last_pull_rfc3339"
-	metaKeyLastHash = "last_xlsx_sha256"
+	metaKeyLastPull       = "last_pull_rfc3339"
+	metaKeyLastHash       = "last_xlsx_sha256"
+	metaKeyLastPullError  = "last_pull_error"
+	metaKeyLastImportRows = "last_import_rows"
 )
 
 type DB struct {
@@ -160,6 +163,7 @@ func (db *DB) ReplaceImport(ctx context.Context, rows []StringRow, hash string, 
 	meta := []MetaModel{
 		{K: metaKeyLastHash, V: hash},
 		{K: metaKeyLastPull, V: pulledAt.UTC().Format(time.RFC3339)},
+		{K: metaKeyLastImportRows, V: strconv.Itoa(len(models))},
 	}
 	for _, m := range meta {
 		if err := upsertMetaTx(ctx, tx, m); err != nil {

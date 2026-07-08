@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/rs/cors"
@@ -12,6 +13,7 @@ type Server struct {
 	db     *DB
 	ready  *ReadyState
 	logger *slog.Logger
+	source string
 }
 
 type StringsResponse struct {
@@ -29,10 +31,13 @@ type ReadyResponse struct {
 }
 
 type StatusResponse struct {
-	LastPull string `json:"last_pull"`
-	LastHash string `json:"last_hash"`
-	Ready    bool   `json:"ready"`
-	Version  string `json:"version"`
+	Source         string `json:"source"`
+	LastPull       string `json:"last_pull"`
+	LastHash       string `json:"last_hash"`
+	LastPullError  string `json:"last_pull_error"`
+	LastImportRows int    `json:"last_import_rows"`
+	Ready          bool   `json:"ready"`
+	Version        string `json:"version"`
 }
 
 func (s *Server) routes() http.Handler {
@@ -78,22 +83,32 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	lastPull, _, err := s.db.GetMeta(r.Context(), metaKeyLastPull)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal_error", "failed to read status", nil)
-		return
+	meta := map[string]string{
+		metaKeyLastPull:       "",
+		metaKeyLastHash:       "",
+		metaKeyLastPullError:  "",
+		metaKeyLastImportRows: "",
 	}
-	lastHash, _, err := s.db.GetMeta(r.Context(), metaKeyLastHash)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal_error", "failed to read status", nil)
-		return
+	for k := range meta {
+		v, _, err := s.db.GetMeta(r.Context(), k)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal_error", "failed to read status", nil)
+			return
+		}
+		meta[k] = v
 	}
 
+	// Absent or malformed count reads as 0.
+	importRows, _ := strconv.Atoi(meta[metaKeyLastImportRows])
+
 	writeOK(w, http.StatusOK, StatusResponse{
-		LastPull: lastPull,
-		LastHash: lastHash,
-		Ready:    s.ready.IsReady(),
-		Version:  version,
+		Source:         s.source,
+		LastPull:       meta[metaKeyLastPull],
+		LastHash:       meta[metaKeyLastHash],
+		LastPullError:  meta[metaKeyLastPullError],
+		LastImportRows: importRows,
+		Ready:          s.ready.IsReady(),
+		Version:        version,
 	})
 }
 
