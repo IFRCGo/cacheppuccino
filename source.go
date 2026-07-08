@@ -69,7 +69,7 @@ func (s *URLSource) Fetch(ctx context.Context, logger *slog.Logger) ([]byte, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode/100 != 2 {
+	if !isHTTPSuccess(resp.StatusCode) {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 		// Error bodies from blob stores can echo signature parameters.
 		return nil, fmt.Errorf("download failed: %s: %s", resp.Status, s.redactSecrets(string(b)))
@@ -106,6 +106,11 @@ func (s *URLSource) redactSecrets(msg string) string {
 		}
 	}
 	return msg
+}
+
+// isHTTPSuccess reports whether the status code is in the 2xx range.
+func isHTTPSuccess(statusCode int) bool {
+	return statusCode >= 200 && statusCode < 300
 }
 
 // readAllLimited reads r fully, erroring if it exceeds max bytes.

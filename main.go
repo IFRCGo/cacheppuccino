@@ -189,7 +189,7 @@ func doHealthcheck(url string) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode/100 != 2 {
+	if !isHTTPSuccess(resp.StatusCode) {
 		return fmt.Errorf("healthcheck failed: %s", resp.Status)
 	}
 	return nil

@@ -113,6 +113,27 @@ func TestRedactURL(t *testing.T) {
 	}
 }
 
+func TestIsHTTPSuccess(t *testing.T) {
+	tests := []struct {
+		statusCode int
+		want       bool
+	}{
+		{199, false},
+		{200, true},
+		{204, true},
+		{299, true},
+		{300, false},
+		{304, false},
+		{404, false},
+		{500, false},
+	}
+	for _, tt := range tests {
+		if got := isHTTPSuccess(tt.statusCode); got != tt.want {
+			t.Errorf("isHTTPSuccess(%d) = %v, want %v", tt.statusCode, got, tt.want)
+		}
+	}
+}
+
 func TestReadAllLimited(t *testing.T) {
 	tests := []struct {
 		name    string

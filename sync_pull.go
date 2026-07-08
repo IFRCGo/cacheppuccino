@@ -49,7 +49,7 @@ func (c *APISource) Fetch(ctx context.Context, logger *slog.Logger) ([]byte, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode/100 != 2 {
+	if !isHTTPSuccess(resp.StatusCode) {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 		return nil, fmt.Errorf("download failed: %s: %s", resp.Status, string(b))
 	}
