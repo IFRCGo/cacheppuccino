@@ -10,31 +10,20 @@ import (
 	"time"
 )
 
-var dbtUpdatedAt = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+var fixedUpdatedAt = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 
-// dbtOpen opens a fresh DB under t.TempDir() and closes it on cleanup.
-func dbtOpen(t *testing.T) *DB {
-	t.Helper()
-	db, err := OpenDB(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
+func newStringRow(page, key, lang, value string) StringRow {
+	return StringRow{Page: page, Key: key, Lang: lang, Value: value, UpdatedAt: fixedUpdatedAt}
 }
 
-func dbtRow(page, key, lang, value string) StringRow {
-	return StringRow{Page: page, Key: key, Lang: lang, Value: value, UpdatedAt: dbtUpdatedAt}
-}
-
-func dbtMustImport(t *testing.T, db *DB, rows []StringRow, hash string, pulledAt time.Time) {
+func mustImport(t *testing.T, db *DB, rows []StringRow, hash string, pulledAt time.Time) {
 	t.Helper()
 	if err := db.ReplaceImport(context.Background(), rows, hash, pulledAt); err != nil {
 		t.Fatalf("ReplaceImport: %v", err)
 	}
 }
 
-func dbtCountStrings(t *testing.T, db *DB) int {
+func countStrings(t *testing.T, db *DB) int {
 	t.Helper()
 	var n int
 	if err := db.sql.QueryRow("SELECT COUNT(*) FROM strings").Scan(&n); err != nil {
@@ -43,8 +32,8 @@ func dbtCountStrings(t *testing.T, db *DB) int {
 	return n
 }
 
-// dbtMeta fetches a meta key and fails the test if the key is absent.
-func dbtMeta(t *testing.T, db *DB, key string) string {
+// mustMeta fetches a meta key and fails the test if the key is absent.
+func mustMeta(t *testing.T, db *DB, key string) string {
 	t.Helper()
 	v, ok, err := db.GetMeta(context.Background(), key)
 	if err != nil {
@@ -56,10 +45,10 @@ func dbtMeta(t *testing.T, db *DB, key string) string {
 	return v
 }
 
-// dbtPullTime parses the stored last-pull meta value as RFC3339.
-func dbtPullTime(t *testing.T, db *DB) time.Time {
+// lastPullTime parses the stored last-pull meta value as RFC3339.
+func lastPullTime(t *testing.T, db *DB) time.Time {
 	t.Helper()
-	raw := dbtMeta(t, db, metaKeyLastPull)
+	raw := mustMeta(t, db, metaKeyLastPull)
 	parsed, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
 		t.Fatalf("meta %q = %q is not RFC3339: %v", metaKeyLastPull, raw, err)
@@ -81,7 +70,7 @@ func TestOpenDBCreatesParentDirs(t *testing.T) {
 }
 
 func TestOpenDBEnablesWAL(t *testing.T) {
-	db := dbtOpen(t)
+	db := openTestDB(t)
 
 	var mode string
 	if err := db.sql.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
@@ -93,7 +82,7 @@ func TestOpenDBEnablesWAL(t *testing.T) {
 }
 
 func TestHasStrings(t *testing.T) {
-	db := dbtOpen(t)
+	db := openTestDB(t)
 	ctx := context.Background()
 
 	has, err := db.HasStrings(ctx)
@@ -104,7 +93,7 @@ func TestHasStrings(t *testing.T) {
 		t.Fatal("HasStrings on fresh DB = true, want false")
 	}
 
-	dbtMustImport(t, db, []StringRow{dbtRow("home", "title", "en", "Home")}, "h1", time.Now())
+	mustImport(t, db, []StringRow{newStringRow("home", "title", "en", "Home")}, "h1", time.Now())
 
 	has, err = db.HasStrings(ctx)
 	if err != nil {
@@ -116,18 +105,18 @@ func TestHasStrings(t *testing.T) {
 }
 
 func TestReplaceImportBasics(t *testing.T) {
-	db := dbtOpen(t)
+	db := openTestDB(t)
 	ctx := context.Background()
 
 	hash := "deadbeefcafe"
 	pulledAt := time.Date(2026, 7, 8, 10, 30, 0, 0, time.FixedZone("NPT", 5*3600+45*60))
 
 	rows := []StringRow{
-		dbtRow("home", "title", "en", "Home"),
-		dbtRow("home", "subtitle", "en", "Welcome"),
-		dbtRow("about", "title", "en", "About"),
+		newStringRow("home", "title", "en", "Home"),
+		newStringRow("home", "subtitle", "en", "Welcome"),
+		newStringRow("about", "title", "en", "About"),
 	}
-	dbtMustImport(t, db, rows, hash, pulledAt)
+	mustImport(t, db, rows, hash, pulledAt)
 
 	got, cleaned, err := db.GetStringsByPagesLang(ctx, []string{"home", "about"}, "en")
 	if err != nil {
@@ -144,31 +133,31 @@ func TestReplaceImportBasics(t *testing.T) {
 		t.Errorf("cleaned = %v, want %v", cleaned, wantCleaned)
 	}
 
-	if gotHash := dbtMeta(t, db, metaKeyLastHash); gotHash != hash {
-		t.Errorf("meta %q = %q, want %q", metaKeyLastHash, gotHash, hash)
+	if gotHash := mustMeta(t, db, metaKeyLastXLSXHash); gotHash != hash {
+		t.Errorf("meta %q = %q, want %q", metaKeyLastXLSXHash, gotHash, hash)
 	}
-	if gotPull := dbtPullTime(t, db); !gotPull.Equal(pulledAt) {
+	if gotPull := lastPullTime(t, db); !gotPull.Equal(pulledAt) {
 		t.Errorf("meta %q = %v, want time equal to %v", metaKeyLastPull, gotPull, pulledAt)
 	}
 }
 
 func TestReplaceImportFullReplace(t *testing.T) {
-	db := dbtOpen(t)
+	db := openTestDB(t)
 	ctx := context.Background()
 
 	first := []StringRow{
-		dbtRow("old", "title", "en", "Old title"),
-		dbtRow("old", "body", "en", "Old body"),
+		newStringRow("old", "title", "en", "Old title"),
+		newStringRow("old", "body", "en", "Old body"),
 	}
-	dbtMustImport(t, db, first, "hash-1", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	mustImport(t, db, first, "hash-1", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 
 	second := []StringRow{
-		dbtRow("new", "title", "en", "New title"),
+		newStringRow("new", "title", "en", "New title"),
 	}
 	pulledAt2 := time.Date(2026, 2, 2, 0, 0, 0, 0, time.UTC)
-	dbtMustImport(t, db, second, "hash-2", pulledAt2)
+	mustImport(t, db, second, "hash-2", pulledAt2)
 
-	if n := dbtCountStrings(t, db); n != 1 {
+	if n := countStrings(t, db); n != 1 {
 		t.Errorf("row count after second import = %d, want 1", n)
 	}
 
@@ -183,28 +172,28 @@ func TestReplaceImportFullReplace(t *testing.T) {
 		t.Errorf("got[\"new\"] = %v, want map with only new title", got["new"])
 	}
 
-	if gotHash := dbtMeta(t, db, metaKeyLastHash); gotHash != "hash-2" {
-		t.Errorf("meta %q = %q, want %q", metaKeyLastHash, gotHash, "hash-2")
+	if gotHash := mustMeta(t, db, metaKeyLastXLSXHash); gotHash != "hash-2" {
+		t.Errorf("meta %q = %q, want %q", metaKeyLastXLSXHash, gotHash, "hash-2")
 	}
-	if gotPull := dbtPullTime(t, db); !gotPull.Equal(pulledAt2) {
+	if gotPull := lastPullTime(t, db); !gotPull.Equal(pulledAt2) {
 		t.Errorf("meta %q = %v, want time equal to %v", metaKeyLastPull, gotPull, pulledAt2)
 	}
 }
 
 func TestReplaceImportDuplicateRowsLastWins(t *testing.T) {
-	db := dbtOpen(t)
+	db := openTestDB(t)
 	ctx := context.Background()
 
 	rows := []StringRow{
-		dbtRow("home", "title", "en", "first"),
-		dbtRow("home", "title", "en", "second"),
-		dbtRow("home", "title", "en", "third"),
+		newStringRow("home", "title", "en", "first"),
+		newStringRow("home", "title", "en", "second"),
+		newStringRow("home", "title", "en", "third"),
 	}
 	if err := db.ReplaceImport(ctx, rows, "h", time.Now()); err != nil {
 		t.Fatalf("ReplaceImport with duplicate (page,key,lang) rows: %v", err)
 	}
 
-	if n := dbtCountStrings(t, db); n != 1 {
+	if n := countStrings(t, db); n != 1 {
 		t.Errorf("row count = %d, want 1", n)
 	}
 
@@ -218,17 +207,17 @@ func TestReplaceImportDuplicateRowsLastWins(t *testing.T) {
 }
 
 func TestReplaceImportChunking(t *testing.T) {
-	db := dbtOpen(t)
+	db := openTestDB(t)
 
 	// > 400 rows spans several ~189-row insert chunks.
 	const total = 450
 	rows := make([]StringRow, 0, total)
 	for i := range total {
-		rows = append(rows, dbtRow("bulk", fmt.Sprintf("key-%03d", i), "en", fmt.Sprintf("value-%03d", i)))
+		rows = append(rows, newStringRow("bulk", fmt.Sprintf("key-%03d", i), "en", fmt.Sprintf("value-%03d", i)))
 	}
-	dbtMustImport(t, db, rows, "bulk-hash", time.Now())
+	mustImport(t, db, rows, "bulk-hash", time.Now())
 
-	if n := dbtCountStrings(t, db); n != total {
+	if n := countStrings(t, db); n != total {
 		t.Fatalf("row count = %d, want %d", n, total)
 	}
 
@@ -245,10 +234,10 @@ func TestReplaceImportChunking(t *testing.T) {
 }
 
 func TestReplaceImportEmptyWipesTableAndSetsMeta(t *testing.T) {
-	db := dbtOpen(t)
+	db := openTestDB(t)
 	ctx := context.Background()
 
-	dbtMustImport(t, db, []StringRow{dbtRow("home", "title", "en", "Home")}, "hash-1", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	mustImport(t, db, []StringRow{newStringRow("home", "title", "en", "Home")}, "hash-1", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 
 	pulledAt2 := time.Date(2026, 3, 3, 6, 7, 8, 0, time.UTC)
 	if err := db.ReplaceImport(ctx, nil, "hash-empty", pulledAt2); err != nil {
@@ -263,21 +252,21 @@ func TestReplaceImportEmptyWipesTableAndSetsMeta(t *testing.T) {
 		t.Error("HasStrings after empty import = true, want false")
 	}
 
-	if gotHash := dbtMeta(t, db, metaKeyLastHash); gotHash != "hash-empty" {
-		t.Errorf("meta %q = %q, want %q", metaKeyLastHash, gotHash, "hash-empty")
+	if gotHash := mustMeta(t, db, metaKeyLastXLSXHash); gotHash != "hash-empty" {
+		t.Errorf("meta %q = %q, want %q", metaKeyLastXLSXHash, gotHash, "hash-empty")
 	}
-	if gotPull := dbtPullTime(t, db); !gotPull.Equal(pulledAt2) {
+	if gotPull := lastPullTime(t, db); !gotPull.Equal(pulledAt2) {
 		t.Errorf("meta %q = %v, want time equal to %v", metaKeyLastPull, gotPull, pulledAt2)
 	}
 }
 
 func TestGetStringsByPagesLangPageCleaning(t *testing.T) {
-	db := dbtOpen(t)
+	db := openTestDB(t)
 	ctx := context.Background()
 
-	dbtMustImport(t, db, []StringRow{
-		dbtRow("home", "title", "en", "Home"),
-		dbtRow("about", "title", "en", "About"),
+	mustImport(t, db, []StringRow{
+		newStringRow("home", "title", "en", "Home"),
+		newStringRow("about", "title", "en", "About"),
 	}, "h", time.Now())
 
 	cases := []struct {
@@ -322,9 +311,9 @@ func TestGetStringsByPagesLangPageCleaning(t *testing.T) {
 }
 
 func TestGetStringsByPagesLangUnknownPageEmptyMap(t *testing.T) {
-	db := dbtOpen(t)
+	db := openTestDB(t)
 
-	dbtMustImport(t, db, []StringRow{dbtRow("home", "title", "en", "Home")}, "h", time.Now())
+	mustImport(t, db, []StringRow{newStringRow("home", "title", "en", "Home")}, "h", time.Now())
 
 	got, _, err := db.GetStringsByPagesLang(context.Background(), []string{"missing"}, "en")
 	if err != nil {
@@ -343,13 +332,13 @@ func TestGetStringsByPagesLangUnknownPageEmptyMap(t *testing.T) {
 }
 
 func TestGetStringsByPagesLangFiltersByLang(t *testing.T) {
-	db := dbtOpen(t)
+	db := openTestDB(t)
 	ctx := context.Background()
 
-	dbtMustImport(t, db, []StringRow{
-		dbtRow("home", "title", "en", "Home"),
-		dbtRow("home", "title", "fr", "Accueil"),
-		dbtRow("home", "greeting", "fr", "Bonjour"),
+	mustImport(t, db, []StringRow{
+		newStringRow("home", "title", "en", "Home"),
+		newStringRow("home", "title", "fr", "Accueil"),
+		newStringRow("home", "greeting", "fr", "Bonjour"),
 	}, "h", time.Now())
 
 	gotFR, _, err := db.GetStringsByPagesLang(ctx, []string{"home"}, "fr")
@@ -372,7 +361,7 @@ func TestGetStringsByPagesLangFiltersByLang(t *testing.T) {
 }
 
 func TestGetMetaMissingKey(t *testing.T) {
-	db := dbtOpen(t)
+	db := openTestDB(t)
 
 	v, ok, err := db.GetMeta(context.Background(), "no-such-key")
 	if err != nil {
@@ -387,7 +376,7 @@ func TestGetMetaMissingKey(t *testing.T) {
 }
 
 func TestSetMetaOverwrites(t *testing.T) {
-	db := dbtOpen(t)
+	db := openTestDB(t)
 	ctx := context.Background()
 
 	if err := db.SetMeta(ctx, "k1", "v1"); err != nil {

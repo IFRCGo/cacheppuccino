@@ -3,21 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-func srcLogger() *slog.Logger {
-	return slog.New(slog.NewJSONHandler(io.Discard, nil))
-}
-
-func srcURLSource(rawURL string) *URLSource {
+func testURLSource(rawURL string) *URLSource {
 	return NewURLSource(Config{
 		TranslationXLSXURL: rawURL,
 		HTTPTimeout:        5 * time.Second,
@@ -34,8 +27,8 @@ func TestURLSourceFetch(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		src := srcURLSource(srv.URL + "/files/translations.xlsx")
-		body, err := src.Fetch(context.Background(), srcLogger())
+		src := testURLSource(srv.URL + "/files/translations.xlsx")
+		body, err := src.Fetch(context.Background(), discardLogger())
 		if err != nil {
 			t.Fatalf("Fetch: %v", err)
 		}
@@ -59,7 +52,7 @@ func TestURLSourceFetch(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		_, err := srcURLSource(srv.URL).Fetch(context.Background(), srcLogger())
+		_, err := testURLSource(srv.URL).Fetch(context.Background(), discardLogger())
 		if err == nil {
 			t.Fatal("Fetch on 404: want error, got nil")
 		}
@@ -71,8 +64,8 @@ func TestURLSourceFetch(t *testing.T) {
 	t.Run("transport error redacts query credentials", func(t *testing.T) {
 		// Errors end up on the public /status endpoint; a SAS/presigned
 		// token in the query must never appear there.
-		src := srcURLSource("http://127.0.0.1:1/translations.xlsx?sv=2022-11-02&sig=SUPERSECRETSAS")
-		_, err := src.Fetch(context.Background(), srcLogger())
+		src := testURLSource("http://127.0.0.1:1/translations.xlsx?sv=2022-11-02&sig=SUPERSECRETSAS")
+		_, err := src.Fetch(context.Background(), discardLogger())
 		if err == nil {
 			t.Fatal("Fetch on unreachable host: want error, got nil")
 		}
@@ -90,8 +83,8 @@ func TestURLSourceFetch(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		src := srcURLSource(srv.URL + "/translations.xlsx?sig=SUPERSECRETSAS")
-		_, err := src.Fetch(context.Background(), srcLogger())
+		src := testURLSource(srv.URL + "/translations.xlsx?sig=SUPERSECRETSAS")
+		_, err := src.Fetch(context.Background(), discardLogger())
 		if err == nil {
 			t.Fatal("Fetch on 403: want error, got nil")
 		}
@@ -156,15 +149,10 @@ func TestReadAllLimited(t *testing.T) {
 func TestStatusReportsSourceAndPullOutcome(t *testing.T) {
 	ctx := context.Background()
 
-	db, err := OpenDB(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
+	db := openTestDB(t)
 	ready := &ReadyState{}
 	ready.SetReady(true)
-	srv := &Server{db: db, ready: ready, logger: srcLogger(), source: "url"}
+	srv := &Server{db: db, ready: ready, logger: discardLogger(), sourceName: "url"}
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
 

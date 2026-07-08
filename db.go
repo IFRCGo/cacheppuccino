@@ -18,7 +18,7 @@ import (
 
 const (
 	metaKeyLastPull       = "last_pull_rfc3339"
-	metaKeyLastHash       = "last_xlsx_sha256"
+	metaKeyLastXLSXHash   = "last_xlsx_sha256"
 	metaKeyLastPullError  = "last_pull_error"
 	metaKeyLastImportRows = "last_import_rows"
 )
@@ -34,15 +34,15 @@ func OpenDB(path string) (*DB, error) {
 		return nil, err
 	}
 
-	sqldb, err := sql.Open(sqliteshim.ShimName, "file:"+path+"?mode=rwc")
+	sqlDB, err := sql.Open(sqliteshim.ShimName, "file:"+path+"?mode=rwc")
 	if err != nil {
 		return nil, err
 	}
 
 	// Single connection: pragmas below stick for the process lifetime,
 	// and SQLite sees one writer, so no busy contention between our own queries.
-	sqldb.SetMaxOpenConns(1)
-	sqldb.SetConnMaxLifetime(0)
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetConnMaxLifetime(0)
 
 	// Set via Exec (not DSN params) so behavior is identical across the
 	// cgo (mattn) and pure-Go (modernc) drivers sqliteshim may pick.
@@ -53,17 +53,17 @@ func OpenDB(path string) (*DB, error) {
 		"PRAGMA temp_store = MEMORY",
 	}
 	for _, p := range pragmas {
-		if _, err := sqldb.Exec(p); err != nil {
-			_ = sqldb.Close()
+		if _, err := sqlDB.Exec(p); err != nil {
+			_ = sqlDB.Close()
 			return nil, fmt.Errorf("%s: %w", p, err)
 		}
 	}
 
-	bdb := bun.NewDB(sqldb, sqlitedialect.New())
+	bunDB := bun.NewDB(sqlDB, sqlitedialect.New())
 
-	db := &DB{sql: sqldb, bun: bdb}
+	db := &DB{sql: sqlDB, bun: bunDB}
 	if err := db.migrate(context.Background()); err != nil {
-		_ = sqldb.Close()
+		_ = sqlDB.Close()
 		return nil, err
 	}
 
@@ -161,9 +161,9 @@ func (db *DB) ReplaceImport(ctx context.Context, rows []StringRow, hash string, 
 	}
 
 	meta := []MetaModel{
-		{K: metaKeyLastHash, V: hash},
-		{K: metaKeyLastPull, V: pulledAt.UTC().Format(time.RFC3339)},
-		{K: metaKeyLastImportRows, V: strconv.Itoa(len(models))},
+		{Key: metaKeyLastXLSXHash, Value: hash},
+		{Key: metaKeyLastPull, Value: pulledAt.UTC().Format(time.RFC3339)},
+		{Key: metaKeyLastImportRows, Value: strconv.Itoa(len(models))},
 	}
 	for _, m := range meta {
 		if err := upsertMetaTx(ctx, tx, m); err != nil {
@@ -228,7 +228,7 @@ func (db *DB) GetStringsByPagesLang(ctx context.Context, pages []string, lang st
 }
 
 func (db *DB) SetMeta(ctx context.Context, k, v string) error {
-	m := &MetaModel{K: k, V: v}
+	m := &MetaModel{Key: k, Value: v}
 
 	_, err := db.bun.NewInsert().
 		Model(m).
@@ -254,5 +254,5 @@ func (db *DB) GetMeta(ctx context.Context, k string) (string, bool, error) {
 		return "", false, err
 	}
 
-	return m.V, true, nil
+	return m.Value, true, nil
 }

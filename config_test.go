@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-// ctAllConfigEnvVars is every env var LoadConfig reads. Each test sets all of
+// allConfigEnvVars is every env var LoadConfig reads. Each test sets all of
 // them explicitly ("" simulates unset) to shield tests from the host env.
-var ctAllConfigEnvVars = []string{
+var allConfigEnvVars = []string{
 	"TRANSLATION_SOURCE",
 	"TRANSLATION_BASE_URL",
 	"TRANSLATION_APPLICATION_ID",
@@ -22,17 +22,17 @@ var ctAllConfigEnvVars = []string{
 	"LOG_LEVEL",
 }
 
-// ctSetConfigEnv sets every config env var, using values from overrides and
+// setConfigEnv sets every config env var, using values from overrides and
 // "" for anything not listed there.
-func ctSetConfigEnv(t *testing.T, overrides map[string]string) {
+func setConfigEnv(t *testing.T, overrides map[string]string) {
 	t.Helper()
-	for _, k := range ctAllConfigEnvVars {
+	for _, k := range allConfigEnvVars {
 		t.Setenv(k, overrides[k])
 	}
 }
 
-// ctRequiredEnv sets only the three required vars to placeholder values.
-func ctRequiredEnv() map[string]string {
+// requiredAPIEnv sets only the three required vars to placeholder values.
+func requiredAPIEnv() map[string]string {
 	return map[string]string{
 		"TRANSLATION_BASE_URL":       "https://translate.example.com",
 		"TRANSLATION_APPLICATION_ID": "app-id",
@@ -41,7 +41,7 @@ func ctRequiredEnv() map[string]string {
 }
 
 func TestLoadConfigDefaults(t *testing.T) {
-	ctSetConfigEnv(t, ctRequiredEnv())
+	setConfigEnv(t, requiredAPIEnv())
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -132,7 +132,7 @@ func TestLoadConfigSourceMatrix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctSetConfigEnv(t, tt.env)
+			setConfigEnv(t, tt.env)
 
 			cfg, err := LoadConfig()
 			if tt.wantErr {
@@ -168,9 +168,9 @@ func TestLoadConfigMissingRequired(t *testing.T) {
 
 	for _, missing := range required {
 		t.Run(missing, func(t *testing.T) {
-			env := ctRequiredEnv()
+			env := requiredAPIEnv()
 			env[missing] = ""
-			ctSetConfigEnv(t, env)
+			setConfigEnv(t, env)
 
 			_, err := LoadConfig()
 			if err == nil {
@@ -183,7 +183,7 @@ func TestLoadConfigMissingRequired(t *testing.T) {
 	}
 
 	t.Run("all missing", func(t *testing.T) {
-		ctSetConfigEnv(t, nil)
+		setConfigEnv(t, nil)
 
 		_, err := LoadConfig()
 		if err == nil {
@@ -247,11 +247,11 @@ func TestLoadConfigInvalidValues(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env := ctRequiredEnv()
+			env := requiredAPIEnv()
 			for k, v := range tt.overrides {
 				env[k] = v
 			}
-			ctSetConfigEnv(t, env)
+			setConfigEnv(t, env)
 
 			_, err := LoadConfig()
 			if err == nil {
@@ -269,11 +269,11 @@ func TestLoadConfigInvalidValues(t *testing.T) {
 func TestLoadConfigMultipleProblems(t *testing.T) {
 	// Missing one required var plus a bad duration plus a bad log level:
 	// all must be reported in the single joined error.
-	env := ctRequiredEnv()
+	env := requiredAPIEnv()
 	env["TRANSLATION_API_KEY"] = ""
 	env["PULL_INTERVAL"] = "bogus"
 	env["LOG_LEVEL"] = "loud"
-	ctSetConfigEnv(t, env)
+	setConfigEnv(t, env)
 
 	_, err := LoadConfig()
 	if err == nil {
@@ -292,9 +292,9 @@ func TestLoadConfigMultipleProblems(t *testing.T) {
 
 func TestLoadConfigZeroInitialPullDeadline(t *testing.T) {
 	// Zero means "no deadline" and must be accepted.
-	env := ctRequiredEnv()
+	env := requiredAPIEnv()
 	env["INITIAL_PULL_DEADLINE"] = "0s"
-	ctSetConfigEnv(t, env)
+	setConfigEnv(t, env)
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -306,14 +306,14 @@ func TestLoadConfigZeroInitialPullDeadline(t *testing.T) {
 }
 
 func TestLoadConfigValidOverrides(t *testing.T) {
-	env := ctRequiredEnv()
+	env := requiredAPIEnv()
 	env["LISTEN_ADDR"] = "127.0.0.1:9999"
 	env["SQLITE_PATH"] = "/tmp/other.db"
 	env["HTTP_TIMEOUT"] = "5s"
 	env["PULL_INTERVAL"] = "1h30m"
 	env["INITIAL_PULL_DEADLINE"] = "250ms"
 	env["LOG_LEVEL"] = "debug"
-	ctSetConfigEnv(t, env)
+	setConfigEnv(t, env)
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -343,9 +343,9 @@ func TestLoadConfigValidOverrides(t *testing.T) {
 func TestLoadConfigValidLogLevels(t *testing.T) {
 	for _, level := range []string{"debug", "info", "warn", "error"} {
 		t.Run(level, func(t *testing.T) {
-			env := ctRequiredEnv()
+			env := requiredAPIEnv()
 			env["LOG_LEVEL"] = level
-			ctSetConfigEnv(t, env)
+			setConfigEnv(t, env)
 
 			cfg, err := LoadConfig()
 			if err != nil {

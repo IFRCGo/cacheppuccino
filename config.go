@@ -52,9 +52,9 @@ func LoadConfig() (Config, error) {
 	}
 
 	cfg := Config{
-		ListenAddr:               env("LISTEN_ADDR", ":8080"),
-		SQLitePath:               env("SQLITE_PATH", "/data/cacheppuccino.db"),
-		TranslationSource:        env("TRANSLATION_SOURCE", sourceAPI),
+		ListenAddr:               envOr("LISTEN_ADDR", ":8080"),
+		SQLitePath:               envOr("SQLITE_PATH", "/data/cacheppuccino.db"),
+		TranslationSource:        envOr("TRANSLATION_SOURCE", sourceAPI),
 		TranslationBaseURL:       os.Getenv("TRANSLATION_BASE_URL"),
 		TranslationApplicationID: os.Getenv("TRANSLATION_APPLICATION_ID"),
 		TranslationAPIKey:        os.Getenv("TRANSLATION_API_KEY"),
@@ -62,7 +62,7 @@ func LoadConfig() (Config, error) {
 		HTTPTimeout:              envDuration("HTTP_TIMEOUT", 30*time.Second),
 		PullInterval:             envDuration("PULL_INTERVAL", 10*time.Minute),
 		InitialPullDeadline:      envDuration("INITIAL_PULL_DEADLINE", 45*time.Second),
-		LogLevel:                 env("LOG_LEVEL", "info"),
+		LogLevel:                 envOr("LOG_LEVEL", "info"),
 	}
 
 	switch cfg.TranslationSource {
@@ -103,7 +103,7 @@ func LoadConfig() (Config, error) {
 	return cfg, nil
 }
 
-func env(k, def string) string {
+func envOr(k, def string) string {
 	v := os.Getenv(k)
 	if v == "" {
 		return def

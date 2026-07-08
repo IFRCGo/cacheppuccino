@@ -10,10 +10,10 @@ import (
 )
 
 type Server struct {
-	db     *DB
-	ready  *ReadyState
-	logger *slog.Logger
-	source string
+	db         *DB
+	ready      *ReadyState
+	logger     *slog.Logger
+	sourceName string
 }
 
 type StringsResponse struct {
@@ -42,7 +42,7 @@ type StatusResponse struct {
 
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /strings", s.handleGetStrings)
+	mux.HandleFunc("GET /strings", s.handleStrings)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /status", s.handleStatus)
@@ -85,7 +85,7 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	meta := map[string]string{
 		metaKeyLastPull:       "",
-		metaKeyLastHash:       "",
+		metaKeyLastXLSXHash:   "",
 		metaKeyLastPullError:  "",
 		metaKeyLastImportRows: "",
 	}
@@ -102,9 +102,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	importRows, _ := strconv.Atoi(meta[metaKeyLastImportRows])
 
 	writeOK(w, http.StatusOK, StatusResponse{
-		Source:         s.source,
+		Source:         s.sourceName,
 		LastPull:       meta[metaKeyLastPull],
-		LastHash:       meta[metaKeyLastHash],
+		LastHash:       meta[metaKeyLastXLSXHash],
 		LastPullError:  meta[metaKeyLastPullError],
 		LastImportRows: importRows,
 		Ready:          s.ready.IsReady(),
@@ -112,7 +112,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleGetStrings(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStrings(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	// Language codes are case-insensitive (BCP 47); import stores lowercase.
@@ -159,7 +159,7 @@ func (s *Server) handleGetStrings(w http.ResponseWriter, r *http.Request) {
 	// so the import hash is a valid ETag for every /strings URL.
 	// Only 200/304 responses carry the caching headers.
 	var etag string
-	if hash, ok, err := s.db.GetMeta(r.Context(), metaKeyLastHash); err == nil && ok {
+	if hash, ok, err := s.db.GetMeta(r.Context(), metaKeyLastXLSXHash); err == nil && ok {
 		etag = `"` + hash + `"`
 		if etagMatches(r.Header.Get("If-None-Match"), etag) {
 			setCacheHeaders(w, etag)

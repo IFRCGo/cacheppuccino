@@ -4,65 +4,20 @@ import (
 	"regexp"
 	"testing"
 	"time"
-
-	"github.com/xuri/excelize/v2"
 )
 
-type xtSheet struct {
-	name string
-	rows [][]any
-}
-
-// xtBuildXLSX builds an in-memory workbook. The first sheet in sheets
-// replaces the default "Sheet1"; subsequent sheets are appended.
-func xtBuildXLSX(t *testing.T, sheets []xtSheet) []byte {
-	t.Helper()
-
-	f := excelize.NewFile()
-	defer func() { _ = f.Close() }()
-
-	for i, s := range sheets {
-		if i == 0 {
-			if s.name != "Sheet1" {
-				if err := f.SetSheetName("Sheet1", s.name); err != nil {
-					t.Fatalf("SetSheetName: %v", err)
-				}
-			}
-		} else {
-			if _, err := f.NewSheet(s.name); err != nil {
-				t.Fatalf("NewSheet: %v", err)
-			}
-		}
-		for r, row := range s.rows {
-			cell, err := excelize.CoordinatesToCellName(1, r+1)
-			if err != nil {
-				t.Fatalf("CoordinatesToCellName: %v", err)
-			}
-			if err := f.SetSheetRow(s.name, cell, &row); err != nil {
-				t.Fatalf("SetSheetRow: %v", err)
-			}
-		}
-	}
-
-	buf, err := f.WriteToBuffer()
-	if err != nil {
-		t.Fatalf("WriteToBuffer: %v", err)
-	}
-	return buf.Bytes()
-}
-
-// xtRowEq compares everything except UpdatedAt.
-func xtRowEq(a, b StringRow) bool {
+// rowContentEq compares everything except UpdatedAt.
+func rowContentEq(a, b StringRow) bool {
 	return a.Page == b.Page && a.Key == b.Key && a.Lang == b.Lang && a.Value == b.Value
 }
 
-func xtAssertRows(t *testing.T, got, want []StringRow) {
+func assertRows(t *testing.T, got, want []StringRow) {
 	t.Helper()
 	if len(got) != len(want) {
 		t.Fatalf("got %d rows, want %d\ngot: %+v", len(got), len(want), got)
 	}
 	for i := range want {
-		if !xtRowEq(got[i], want[i]) {
+		if !rowContentEq(got[i], want[i]) {
 			t.Errorf("row %d: got %+v, want %+v", i, got[i], want[i])
 		}
 	}
@@ -71,7 +26,7 @@ func xtAssertRows(t *testing.T, got, want []StringRow) {
 func TestParseXLSXHappyPath(t *testing.T) {
 	// A decoy first sheet with an invalid header ensures the
 	// "Translations" sheet is preferred over the first sheet.
-	data := xtBuildXLSX(t, []xtSheet{
+	data := buildXLSX(t, []xlsxSheet{
 		{
 			name: "Decoy",
 			rows: [][]any{{"Namespace", "Key", "en"}, {"x", "y", "z"}},
@@ -99,7 +54,7 @@ func TestParseXLSXHappyPath(t *testing.T) {
 		{Page: "home", Key: "subtitle", Lang: "en", Value: "World"},
 		{Page: "home", Key: "subtitle", Lang: "es", Value: "Mundo"},
 	}
-	xtAssertRows(t, got, want)
+	assertRows(t, got, want)
 
 	for i, r := range got {
 		if r.UpdatedAt.IsZero() {
@@ -119,7 +74,7 @@ func TestParseXLSXHappyPath(t *testing.T) {
 
 func TestParseXLSXSheetFallback(t *testing.T) {
 	// No "Translations" sheet: the first sheet is parsed instead.
-	data := xtBuildXLSX(t, []xtSheet{
+	data := buildXLSX(t, []xlsxSheet{
 		{
 			name: "Sheet1",
 			rows: [][]any{
@@ -133,7 +88,7 @@ func TestParseXLSXSheetFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseXLSX: %v", err)
 	}
-	xtAssertRows(t, got, []StringRow{
+	assertRows(t, got, []StringRow{
 		{Page: "about", Key: "heading", Lang: "en", Value: "About us"},
 	})
 }
@@ -152,7 +107,7 @@ func TestParseXLSXHeaderValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data := xtBuildXLSX(t, []xtSheet{
+			data := buildXLSX(t, []xlsxSheet{
 				{
 					name: "Translations",
 					rows: [][]any{tt.header, {"p1", "k1", "v1"}},
@@ -168,7 +123,7 @@ func TestParseXLSXHeaderValidation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseXLSX: %v", err)
 			}
-			xtAssertRows(t, got, []StringRow{
+			assertRows(t, got, []StringRow{
 				{Page: "p1", Key: "k1", Lang: "en", Value: "v1"},
 			})
 		})
@@ -176,7 +131,7 @@ func TestParseXLSXHeaderValidation(t *testing.T) {
 }
 
 func TestParseXLSXRowFiltering(t *testing.T) {
-	data := xtBuildXLSX(t, []xtSheet{
+	data := buildXLSX(t, []xlsxSheet{
 		{
 			name: "Translations",
 			rows: [][]any{
@@ -195,14 +150,14 @@ func TestParseXLSXRowFiltering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseXLSX: %v", err)
 	}
-	xtAssertRows(t, got, []StringRow{
+	assertRows(t, got, []StringRow{
 		{Page: "p3", Key: "k3", Lang: "fr", Value: "salut"},
 		{Page: "p4", Key: "k4", Lang: "en", Value: "hello"},
 	})
 }
 
 func TestParseXLSXEmptySheet(t *testing.T) {
-	data := xtBuildXLSX(t, []xtSheet{{name: "Translations"}})
+	data := buildXLSX(t, []xlsxSheet{{name: "Translations"}})
 
 	got, err := ParseXLSX(data)
 	if err != nil {
@@ -219,7 +174,7 @@ func TestParseXLSXInvalidInput(t *testing.T) {
 	}
 }
 
-var xtHexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var sha256HexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func TestHashBytes(t *testing.T) {
 	tests := []struct {
@@ -241,7 +196,7 @@ func TestHashBytes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := HashBytes(tt.input)
-			if !xtHexRe.MatchString(got) {
+			if !sha256HexRe.MatchString(got) {
 				t.Errorf("HashBytes(%q) = %q, not 64 lowercase hex chars", tt.input, got)
 			}
 			if got != tt.want {

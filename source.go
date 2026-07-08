@@ -61,9 +61,9 @@ func (s *URLSource) Fetch(ctx context.Context, logger *slog.Logger) ([]byte, err
 	if err != nil {
 		// Transport errors (*url.Error) embed the full URL including any
 		// query credentials; rebuild the message around the redacted URL.
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			return nil, fmt.Errorf("xlsx request failed: %s %s: %w", ue.Op, s.redactedURL, ue.Err)
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return nil, fmt.Errorf("xlsx request failed: %s %s: %w", urlErr.Op, s.redactedURL, urlErr.Err)
 		}
 		return nil, fmt.Errorf("xlsx request failed: GET %s", s.redactedURL)
 	}
@@ -109,13 +109,13 @@ func (s *URLSource) redactSecrets(msg string) string {
 }
 
 // readAllLimited reads r fully, erroring if it exceeds max bytes.
-func readAllLimited(r io.Reader, max int64) ([]byte, error) {
-	b, err := io.ReadAll(io.LimitReader(r, max+1))
+func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(b)) > max {
-		return nil, fmt.Errorf("response exceeds %d bytes", max)
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("response exceeds %d bytes", limit)
 	}
 	return b, nil
 }
