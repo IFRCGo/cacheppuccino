@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,11 @@ import (
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/sqlitedialect"
 	"github.com/uptrace/bun/driver/sqliteshim"
+)
+
+const (
+	metaKeyLastPull = "last_pull_rfc3339"
+	metaKeyLastHash = "last_xlsx_sha256"
 )
 
 type DB struct {
@@ -25,20 +31,30 @@ func OpenDB(path string) (*DB, error) {
 		return nil, err
 	}
 
-	sqldb, err := sql.Open(
-		sqliteshim.ShimName,
-		"file:"+path+"?mode=rwc"+
-			"&_pragma=busy_timeout(5000)"+
-			"&_pragma=temp_store=2"+
-			"&_pragma=busy_timeout(5000)",
-	)
-
+	sqldb, err := sql.Open(sqliteshim.ShimName, "file:"+path+"?mode=rwc")
 	if err != nil {
 		return nil, err
 	}
 
+	// Single connection: pragmas below stick for the process lifetime,
+	// and SQLite sees one writer, so no busy contention between our own queries.
 	sqldb.SetMaxOpenConns(1)
 	sqldb.SetConnMaxLifetime(0)
+
+	// Set via Exec (not DSN params) so behavior is identical across the
+	// cgo (mattn) and pure-Go (modernc) drivers sqliteshim may pick.
+	pragmas := []string{
+		"PRAGMA busy_timeout = 5000",
+		"PRAGMA journal_mode = WAL",
+		"PRAGMA synchronous = NORMAL",
+		"PRAGMA temp_store = MEMORY",
+	}
+	for _, p := range pragmas {
+		if _, err := sqldb.Exec(p); err != nil {
+			_ = sqldb.Close()
+			return nil, fmt.Errorf("%s: %w", p, err)
+		}
+	}
 
 	bdb := bun.NewDB(sqldb, sqlitedialect.New())
 
@@ -82,78 +98,25 @@ func (db *DB) migrate(ctx context.Context) error {
 	return err
 }
 
-func (db *DB) UpsertString(ctx context.Context, page, key, lang, value string, updatedAt time.Time) error {
-	m := &StringModel{
-		Page:      page,
-		Key:       key,
-		Lang:      lang,
-		Value:     value,
-		UpdatedAt: updatedAt.UTC(),
-	}
-
-	_, err := db.bun.NewInsert().
-		Model(m).
-		On("CONFLICT (page, key, lang) DO UPDATE").
-		Set("value = EXCLUDED.value").
-		Set("updated_at = EXCLUDED.updated_at").
-		Exec(ctx)
-
-	return err
+// HasStrings reports whether the cache holds any servable data.
+func (db *DB) HasStrings(ctx context.Context) (bool, error) {
+	return db.bun.NewSelect().
+		Model((*StringModel)(nil)).
+		Exists(ctx)
 }
 
-// UpsertStringsBatch upserts many rows efficiently.
-// Uses a transaction + chunked multi-row INSERT to avoid SQLite variable limits.
-func (db *DB) UpsertStringsBatch(ctx context.Context, rows []StringModel) error {
-	if len(rows) == 0 {
-		return nil
-	}
-
+// ReplaceImport atomically replaces the entire strings table with the given
+// rows and records the import metadata. The XLSX is the complete source of
+// truth, so rows absent from it must not survive an import.
+func (db *DB) ReplaceImport(ctx context.Context, rows []StringRow, hash string, pulledAt time.Time) error {
 	// SQLite default max variables is often 999.
 	// We insert 5 columns per row: page, key, lang, value, updated_at.
 	const (
 		sqliteMaxVars  = 999
 		colsPerRow     = 5
-		safetyHeadroom = 50 // leave some room
+		safetyHeadroom = 50
 	)
-	maxRowsPerStmt := (sqliteMaxVars - safetyHeadroom) / colsPerRow
-	if maxRowsPerStmt < 1 {
-		return fmt.Errorf("invalid maxRowsPerStmt=%d", maxRowsPerStmt)
-	}
-
-	// Transaction: makes the whole import much faster and consistent.
-	tx, err := db.bun.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	for i := 0; i < len(rows); i += maxRowsPerStmt {
-		end := min(i+maxRowsPerStmt, len(rows))
-
-		chunk := rows[i:end]
-
-		_, err := tx.NewInsert().
-			Model(&chunk).
-			On("CONFLICT (page, key, lang) DO UPDATE").
-			Set("value = EXCLUDED.value").
-			Set("updated_at = EXCLUDED.updated_at").
-			Exec(ctx)
-		if err != nil {
-			return err
-		}
-	}
-
-	return tx.Commit()
-}
-
-// UpsertStringsFromRows is a convenience wrapper if you want to pass parsed rows directly.
-func (db *DB) UpsertStringsFromRows(
-	ctx context.Context,
-	rows []StringRow, // rename ParsedRow to your actual ParseXLSX row type
-) error {
-	if len(rows) == 0 {
-		return nil
-	}
+	const maxRowsPerStmt = (sqliteMaxVars - safetyHeadroom) / colsPerRow
 
 	models := make([]StringModel, 0, len(rows))
 	for _, r := range rows {
@@ -166,7 +129,54 @@ func (db *DB) UpsertStringsFromRows(
 		})
 	}
 
-	return db.UpsertStringsBatch(ctx, models)
+	tx, err := db.bun.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.NewDelete().Model((*StringModel)(nil)).Where("1 = 1").Exec(ctx); err != nil {
+		return err
+	}
+
+	for i := 0; i < len(models); i += maxRowsPerStmt {
+		end := min(i+maxRowsPerStmt, len(models))
+
+		chunk := models[i:end]
+
+		// ON CONFLICT keeps last-one-wins semantics for duplicate
+		// (page, key, lang) rows within a single XLSX.
+		_, err := tx.NewInsert().
+			Model(&chunk).
+			On("CONFLICT (page, key, lang) DO UPDATE").
+			Set("value = EXCLUDED.value").
+			Set("updated_at = EXCLUDED.updated_at").
+			Exec(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
+	meta := []MetaModel{
+		{K: metaKeyLastHash, V: hash},
+		{K: metaKeyLastPull, V: pulledAt.UTC().Format(time.RFC3339)},
+	}
+	for _, m := range meta {
+		if err := upsertMetaTx(ctx, tx, m); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func upsertMetaTx(ctx context.Context, tx bun.Tx, m MetaModel) error {
+	_, err := tx.NewInsert().
+		Model(&m).
+		On("CONFLICT (k) DO UPDATE").
+		Set("v = EXCLUDED.v").
+		Exec(ctx)
+	return err
 }
 
 func (db *DB) GetStringsByPagesLang(ctx context.Context, pages []string, lang string) (map[string]map[string]string, []string, error) {
@@ -234,7 +244,7 @@ func (db *DB) GetMeta(ctx context.Context, k string) (string, bool, error) {
 		Scan(ctx)
 
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return "", false, nil
 		}
 		return "", false, err

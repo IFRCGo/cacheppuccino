@@ -1,7 +1,7 @@
 {
   "info": {
     "title": "cacheppuccino",
-    "version": "0.1.0"
+    "version": "dev"
   },
   "openapi": "3.0.3",
   "paths": {
@@ -89,7 +89,51 @@
             },
             "description": "Ready"
           },
-          "503": {
+          "default": {
+            "description": ""
+          }
+        },
+        "summary": "Readiness endpoint (always ready while the process is up; see /status for the servable-data signal)"
+      }
+    },
+    "/status": {
+      "get": {
+        "operationId": "getStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "nullable": true,
+                      "properties": {
+                        "last_hash": {
+                          "type": "string"
+                        },
+                        "last_pull": {
+                          "type": "string"
+                        },
+                        "ready": {
+                          "type": "boolean"
+                        },
+                        "version": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "500": {
             "content": {
               "application/json": {
                 "schema": {
@@ -120,48 +164,7 @@
                 }
               }
             },
-            "description": "Not ready"
-          },
-          "default": {
-            "description": ""
-          }
-        },
-        "summary": "Readiness endpoint"
-      }
-    },
-    "/status": {
-      "get": {
-        "operationId": "getStatus",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "data": {
-                      "nullable": true,
-                      "properties": {
-                        "last_hash": {
-                          "type": "string"
-                        },
-                        "last_pull": {
-                          "type": "string"
-                        },
-                        "ready": {
-                          "type": "boolean"
-                        }
-                      },
-                      "type": "object"
-                    },
-                    "ok": {
-                      "type": "boolean"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
+            "description": "Internal error"
           },
           "default": {
             "description": ""
@@ -244,6 +247,9 @@
               }
             },
             "description": "OK"
+          },
+          "304": {
+            "description": "Not modified (If-None-Match matched the current ETag)"
           },
           "400": {
             "content": {

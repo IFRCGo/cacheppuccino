@@ -7,9 +7,10 @@ It periodically downloads an XLSX export from a translation service, stores the 
 ## Features
 
 - XLSX import from external translation service
-- Periodic background sync
+- Periodic background sync (full replace per import; the XLSX is the source of truth)
 - SQLite-backed cache
 - Fetch translations by page(s) + language
+- ETag / If-None-Match support on `/strings`
 - Consistent JSON response envelope
 - OpenAPI 3 schema generation (via kin-openapi)
 - Health + readiness endpoints
@@ -81,11 +82,24 @@ curl "http://localhost:8080/strings?pages=home,about&lang=en"
 
 On startup:
 
-1. Performs an initial XLSX pull.
-2. If successful → service becomes ready.
+1. If the SQLite cache already holds data from a previous run, `/status` reports `ready: true` immediately.
+2. Performs an initial XLSX pull. A successful pull also sets `ready: true`.
 3. Periodically refreshes based on `PULL_INTERVAL`.
 
-The service avoids re-importing unchanged XLSX files by hashing the downloaded content.
+Each import fully replaces the cached strings inside a single transaction, so rows removed
+from the XLSX disappear from the cache. The service avoids re-importing unchanged XLSX
+files by hashing the downloaded content.
+
+### XLSX format
+
+The export must contain a sheet named `Translations` (falls back to the first sheet), with
+a header row of exactly `page | key | <lang> | <lang> | ...` (case-insensitive). Files with
+other header names (e.g. `Namespace`) are rejected.
+
+### Response caching
+
+`/strings` responses carry an `ETag` derived from the last import hash and
+`Cache-Control: public, max-age=60`. Requests with a matching `If-None-Match` get `304 Not Modified`.
 
 
 ## Environment Variables
@@ -94,7 +108,7 @@ The service avoids re-importing unchanged XLSX files by hashing the downloaded c
 |----------|----------|------------|
 | `TRANSLATION_BASE_URL` | Yes | Base URL of translation service |
 | `TRANSLATION_APPLICATION_ID` | Yes | Translation application ID |
-| `TRANSLATION_API_KEY` | No | Sent as `X-API-KEY` header |
+| `TRANSLATION_API_KEY` | Yes | Sent as `X-API-KEY` header |
 | `SQLITE_PATH` | No | Default: `/data/cacheppuccino.db` |
 | `PULL_INTERVAL` | No | Default: `10m` |
 | `HTTP_TIMEOUT` | No | Default: `30s` |
@@ -135,7 +149,10 @@ docker compose down -v
 ## Health Checks
 
 - `GET /healthz` → service running
-- `GET /readyz` → initial sync completed
+- `GET /readyz` → always `200` while the process is up. Deliberately not gated on data:
+  the deploy tooling restarts pods that stay unready, and with a single replica there is
+  no alternative pod to route to. Whether the cache actually holds servable data is
+  reported as `ready` on `GET /status`.
 - Docker healthcheck uses internal `--healthcheck` flag
 
 
@@ -159,8 +176,8 @@ go run . --schema
 ## Database
 
 - SQLite
-- WAL mode enabled
-- Uses `mode=rwc`
+- WAL mode with `synchronous=NORMAL`
+- Single connection (`MaxOpenConns=1`)
 - Indexed by `(page, lang)`
 - Metadata table stores:
   - `last_pull_rfc3339`
@@ -173,6 +190,12 @@ Run locally:
 ```bash
 go mod tidy
 go run .
+```
+
+Run tests:
+
+```bash
+go test ./...
 ```
 
 Build binary:

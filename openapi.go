@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -41,7 +40,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 
 	spec, err := buildOpenAPISpec(baseURL)
 	if err != nil {
-		fmt.Println(err.Error())
+		s.logger.Error("openapi spec build failed", "err", err)
 		writeErr(w, http.StatusInternalServerError, "internal_error", "failed to build openapi spec", nil)
 		return
 	}
@@ -102,7 +101,7 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 		OpenAPI: "3.0.3",
 		Info: &openapi3.Info{
 			Title:   "cacheppuccino",
-			Version: "0.1.0",
+			Version: version,
 		},
 		Servers: openapi3.Servers{
 			{URL: baseURL},
@@ -139,16 +138,12 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 	}
 	spec.Paths.Set("/readyz", &openapi3.PathItem{
 		Get: &openapi3.Operation{
-			Summary:     "Readiness endpoint",
+			Summary:     "Readiness endpoint (always ready while the process is up; see /status for the servable-data signal)",
 			OperationID: "getReadyz",
 			Responses: newResponses(map[string]*openapi3.ResponseRef{
 				"200": {Value: &openapi3.Response{
 					Description: ptrString("Ready"),
 					Content:     ready200,
-				}},
-				"503": {Value: &openapi3.Response{
-					Description: ptrString("Not ready"),
-					Content:     errResp,
 				}},
 			}),
 		},
@@ -167,6 +162,10 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 				"200": {Value: &openapi3.Response{
 					Description: ptrString("OK"),
 					Content:     status200,
+				}},
+				"500": {Value: &openapi3.Response{
+					Description: ptrString("Internal error"),
+					Content:     errResp,
 				}},
 			}),
 		},
@@ -224,6 +223,9 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 				"200": {Value: &openapi3.Response{
 					Description: ptrString("OK"),
 					Content:     strings200,
+				}},
+				"304": {Value: &openapi3.Response{
+					Description: ptrString("Not modified (If-None-Match matched the current ETag)"),
 				}},
 				"400": {Value: &openapi3.Response{
 					Description: ptrString("Bad request"),

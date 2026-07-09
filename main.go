@@ -14,6 +14,9 @@ import (
 	"time"
 )
 
+// version is injected at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	healthcheck := flag.Bool("healthcheck", false, "run a quick health probe and exit")
 	schema := flag.Bool("schema", false, "generate a openapi.json file and exit")
@@ -21,32 +24,25 @@ func main() {
 	flag.Parse()
 
 	if *schema {
-		openapiSchema, err := buildOpenAPISpec("/")
-		if err != nil {
+		if err := writeSchemaFile("openapi.json"); err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
-			os.Exit(1)
-		}
-
-		// Convert to JSON bytes
-		fileData, jsonErr := json.MarshalIndent(openapiSchema, "", "  ")
-		if jsonErr != nil {
-			fmt.Fprintln(os.Stderr, jsonErr.Error())
-			os.Exit(1)
-		}
-
-		fileErr := os.WriteFile("openapi.json", fileData, 0644)
-		if fileErr != nil {
-			fmt.Fprintln(os.Stderr, fileErr.Error())
 			os.Exit(1)
 		}
 		os.Exit(0)
 	}
 
-	cfg := LoadConfig()
+	cfg, err := LoadConfig()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(1)
+	}
 	logger := newLogger(cfg.LogLevel)
 
 	if *healthcheck {
-		err := doHealthcheck("http://127.0.0.1" + cfg.ListenAddr + "/healthz")
+		url, err := healthcheckURL(cfg.ListenAddr)
+		if err == nil {
+			err = doHealthcheck(url)
+		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
 			os.Exit(1)
@@ -66,18 +62,29 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Ready = can serve: data from a previous run counts, even if the
+	// upstream is currently unreachable. A pull success also sets it.
 	ready := &ReadyState{}
-	ready.SetReady(true)
+	hasData, err := db.HasStrings(ctx)
+	if err != nil {
+		logger.Error("readiness check failed", slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+	ready.SetReady(hasData)
 
 	srv := &Server{db: db, ready: ready, logger: logger}
 
 	logger.Info("cacheppuccino starting",
+		slog.String("version", version),
 		slog.String("addr", cfg.ListenAddr),
+		slog.Bool("has_data", hasData),
 		slog.String("pull_interval", cfg.PullInterval.String()),
 		slog.String("http_timeout", cfg.HTTPTimeout.String()),
 		slog.String("initial_pull_deadline", cfg.InitialPullDeadline.String()),
 	)
 
+	// No BaseContext: request contexts must outlive the shutdown signal
+	// so Shutdown can drain in-flight requests instead of aborting them.
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           srv.routes(),
@@ -86,9 +93,6 @@ func main() {
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
-		BaseContext: func(l net.Listener) context.Context {
-			return ctx
-		},
 	}
 
 	go func() {
@@ -124,6 +128,20 @@ func main() {
 	}
 }
 
+func writeSchemaFile(path string) error {
+	spec, err := buildOpenAPISpec("/")
+	if err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(spec, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, data, 0o644)
+}
+
 func newLogger(level string) *slog.Logger {
 	var lvl slog.Level
 	switch level {
@@ -139,6 +157,23 @@ func newLogger(level string) *slog.Logger {
 
 	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})
 	return slog.New(h)
+}
+
+// healthcheckURL derives the probe URL from LISTEN_ADDR. The probe runs
+// inside the same container as the server (the distroless image has no
+// curl, so the binary probes itself): wildcard binds (":8080",
+// "0.0.0.0:8080", "[::]:8080") are reachable via loopback, while an
+// explicit bind host must be probed directly.
+func healthcheckURL(listenAddr string) (string, error) {
+	host, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return "", fmt.Errorf("invalid LISTEN_ADDR %q: %w", listenAddr, err)
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/healthz", nil
 }
 
 func doHealthcheck(url string) error {
