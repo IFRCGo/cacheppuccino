@@ -1,4 +1,8 @@
 # Values for alpha instance
+#
+# Alpha runs in mock mode for QA of the GO web-app: strings come from a
+# QA-hosted XLSX file (same format as the translation service export)
+# instead of the real IFRC translation API.
 ingress:
   enabled: true
   host: cacheppuccino-alpha-1.ifrc-go.dev.togglecorp.com
@@ -19,11 +23,11 @@ sqlite:
 env:
   LISTEN_ADDR: ":8080"
   LOG_LEVEL: "info"
-  TRANSLATION_BASE_URL: "https://ifrc-translationapi.azurewebsites.net"
-  TRANSLATION_APPLICATION_ID: "18"
-  PULL_INTERVAL: "10m"
+  TRANSLATION_SOURCE: "url"
+  # TODO: point at the QA-hosted XLSX (any public or signed HTTPS URL).
+  TRANSLATION_XLSX_URL: "https://example.com/ifrc-go/translations.xlsx"
+  # Short interval so QA edits show up within a minute (unchanged files
+  # are skipped by content hash, so frequent polling is cheap).
+  PULL_INTERVAL: "1m"
   HTTP_TIMEOUT: "1m"
   INITIAL_PULL_DEADLINE: "2m"
-
-secrets:
-  TRANSLATION_API_KEY: "dummy"

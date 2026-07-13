@@ -24,7 +24,7 @@ func main() {
 	flag.Parse()
 
 	if *schema {
-		if err := writeSchemaFile("openapi.json"); err != nil {
+		if err := writeOpenAPISpecFile("openapi.json"); err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
 			os.Exit(1)
 		}
@@ -57,7 +57,12 @@ func main() {
 	}
 	defer func() { _ = db.Close() }()
 
-	client := NewTranslationClient(cfg)
+	var source XLSXSource
+	if cfg.TranslationSource == sourceURL {
+		source = NewURLSource(cfg)
+	} else {
+		source = NewAPISource(cfg)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -72,11 +77,12 @@ func main() {
 	}
 	ready.SetReady(hasData)
 
-	srv := &Server{db: db, ready: ready, logger: logger}
+	srv := &Server{db: db, ready: ready, logger: logger, sourceName: source.Name()}
 
 	logger.Info("cacheppuccino starting",
 		slog.String("version", version),
 		slog.String("addr", cfg.ListenAddr),
+		slog.String("source", source.Name()),
 		slog.Bool("has_data", hasData),
 		slog.String("pull_interval", cfg.PullInterval.String()),
 		slog.String("http_timeout", cfg.HTTPTimeout.String()),
@@ -107,10 +113,9 @@ func main() {
 	StartPeriodicPuller(
 		ctx,
 		db,
-		client,
+		source,
 		cfg.PullInterval,
 		cfg.InitialPullDeadline,
-		cfg.TranslationApplicationID,
 		ready,
 		logger,
 	)
@@ -128,7 +133,7 @@ func main() {
 	}
 }
 
-func writeSchemaFile(path string) error {
+func writeOpenAPISpecFile(path string) error {
 	spec, err := buildOpenAPISpec("/")
 	if err != nil {
 		return err
@@ -143,19 +148,19 @@ func writeSchemaFile(path string) error {
 }
 
 func newLogger(level string) *slog.Logger {
-	var lvl slog.Level
+	var slogLevel slog.Level
 	switch level {
 	case "debug":
-		lvl = slog.LevelDebug
+		slogLevel = slog.LevelDebug
 	case "warn":
-		lvl = slog.LevelWarn
+		slogLevel = slog.LevelWarn
 	case "error":
-		lvl = slog.LevelError
+		slogLevel = slog.LevelError
 	default:
-		lvl = slog.LevelInfo
+		slogLevel = slog.LevelInfo
 	}
 
-	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})
+	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slogLevel})
 	return slog.New(h)
 }
 
@@ -184,7 +189,7 @@ func doHealthcheck(url string) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode/100 != 2 {
+	if !isHTTPSuccess(resp.StatusCode) {
 		return fmt.Errorf("healthcheck failed: %s", resp.Status)
 	}
 	return nil

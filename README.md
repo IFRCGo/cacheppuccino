@@ -7,6 +7,7 @@ It periodically downloads an XLSX export from a translation service, stores the 
 ## Features
 
 - XLSX import from external translation service
+- Mock mode: pull the XLSX from a plain URL instead of the API (`TRANSLATION_SOURCE=url`)
 - Periodic background sync (full replace per import; the XLSX is the source of truth)
 - SQLite-backed cache
 - Fetch translations by page(s) + language
@@ -101,14 +102,37 @@ other header names (e.g. `Namespace`) are rejected.
 `/strings` responses carry an `ETag` derived from the last import hash and
 `Cache-Control: public, max-age=60`. Requests with a matching `If-None-Match` get `304 Not Modified`.
 
+## Mock mode (`TRANSLATION_SOURCE=url`)
+
+For QA/alpha instances the service can pull the XLSX from any plain HTTP(S) URL
+instead of the IFRC translation API:
+
+```env
+TRANSLATION_SOURCE=url
+TRANSLATION_XLSX_URL=https://example.com/ifrc-go/translations.xlsx
+```
+
+- The file must be in the exact format the translation service exports
+  (see "XLSX format" above; `Namespace` headers are rejected).
+- Public URLs, Azure Blob SAS URLs, and S3 presigned URLs all work; no
+  auth headers are sent.
+- The regular pull loop applies: updates to the hosted file show up within
+  `PULL_INTERVAL` (alpha uses `1m`); unchanged files are skipped by hash.
+- Check `GET /status` to debug a broken file: it reports `source`,
+  `last_pull_error` (cleared on success), and `last_import_rows`.
+- In `url` mode the `TRANSLATION_BASE_URL`, `TRANSLATION_APPLICATION_ID`,
+  and `TRANSLATION_API_KEY` variables are ignored.
+
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|------------|
-| `TRANSLATION_BASE_URL` | Yes | Base URL of translation service |
-| `TRANSLATION_APPLICATION_ID` | Yes | Translation application ID |
-| `TRANSLATION_API_KEY` | Yes | Sent as `X-API-KEY` header |
+| `TRANSLATION_SOURCE` | No | `api` (default) or `url` (mock mode) |
+| `TRANSLATION_BASE_URL` | api mode | Base URL of translation service |
+| `TRANSLATION_APPLICATION_ID` | api mode | Translation application ID |
+| `TRANSLATION_API_KEY` | api mode | Sent as `X-API-KEY` header |
+| `TRANSLATION_XLSX_URL` | url mode | HTTP(S) URL of the mock XLSX file |
 | `SQLITE_PATH` | No | Default: `/data/cacheppuccino.db` |
 | `PULL_INTERVAL` | No | Default: `10m` |
 | `HTTP_TIMEOUT` | No | Default: `30s` |
@@ -182,6 +206,8 @@ go run . --schema
 - Metadata table stores:
   - `last_pull_rfc3339`
   - `last_xlsx_sha256`
+  - `last_pull_error`
+  - `last_import_rows`
 
 ## Development
 

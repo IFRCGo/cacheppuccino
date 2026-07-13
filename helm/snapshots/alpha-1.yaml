@@ -24,7 +24,6 @@ metadata:
     app.kubernetes.io/managed-by: Helm
 type: Opaque
 stringData:
-  TRANSLATION_API_KEY: "dummy"
 ---
 # Source: cacheppuccino-helm/templates/configmap.yaml
 apiVersion: v1
@@ -43,9 +42,11 @@ data:
   INITIAL_PULL_DEADLINE: "2m"
   LISTEN_ADDR: ":8080"
   LOG_LEVEL: "info"
-  PULL_INTERVAL: "10m"
-  TRANSLATION_APPLICATION_ID: "18"
-  TRANSLATION_BASE_URL: "https://ifrc-translationapi.azurewebsites.net"
+  PULL_INTERVAL: "1m"
+  TRANSLATION_APPLICATION_ID: ""
+  TRANSLATION_BASE_URL: ""
+  TRANSLATION_SOURCE: "url"
+  TRANSLATION_XLSX_URL: "https://example.com/ifrc-go/translations.xlsx"
 ---
 # Source: cacheppuccino-helm/templates/pvc.yaml
 apiVersion: v1

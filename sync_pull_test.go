@@ -3,76 +3,28 @@ package main
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/xuri/excelize/v2"
 )
 
-const stSheetName = "Translations"
-
-func stLogger() *slog.Logger {
-	return slog.New(slog.NewJSONHandler(io.Discard, nil))
-}
-
-func stOpenDB(t *testing.T) *DB {
-	t.Helper()
-	db, err := OpenDB(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
-}
-
-func stClient(baseURL, apiKey string) *TranslationClient {
-	return NewTranslationClient(Config{
-		TranslationBaseURL: baseURL,
-		TranslationAPIKey:  apiKey,
-		HTTPTimeout:        5 * time.Second,
+func testAPISource(baseURL, apiKey string) *APISource {
+	return NewAPISource(Config{
+		TranslationBaseURL:       baseURL,
+		TranslationApplicationID: "app-1",
+		TranslationAPIKey:        apiKey,
+		HTTPTimeout:              5 * time.Second,
 	})
 }
 
-// stXLSX builds an in-memory workbook whose "Translations" sheet holds the
-// given rows; rows[0] is the header.
-func stXLSX(t *testing.T, rows [][]string) []byte {
+// seedXLSX has 3 data rows x 2 languages = 6 imported StringRows.
+func seedXLSX(t *testing.T) []byte {
 	t.Helper()
-
-	f := excelize.NewFile()
-	defer func() { _ = f.Close() }()
-
-	if err := f.SetSheetName("Sheet1", stSheetName); err != nil {
-		t.Fatalf("SetSheetName: %v", err)
-	}
-	for i := range rows {
-		cell, err := excelize.CoordinatesToCellName(1, i+1)
-		if err != nil {
-			t.Fatalf("CoordinatesToCellName: %v", err)
-		}
-		if err := f.SetSheetRow(stSheetName, cell, &rows[i]); err != nil {
-			t.Fatalf("SetSheetRow: %v", err)
-		}
-	}
-
-	buf, err := f.WriteToBuffer()
-	if err != nil {
-		t.Fatalf("WriteToBuffer: %v", err)
-	}
-	return buf.Bytes()
-}
-
-// stSeedPayload has 3 data rows x 2 languages = 6 imported StringRows.
-func stSeedPayload(t *testing.T) []byte {
-	t.Helper()
-	return stXLSX(t, [][]string{
+	return translationsXLSX(t, [][]string{
 		{"page", "key", "en", "fr"},
 		{"home", "greeting", "Hello", "Bonjour"},
 		{"home", "farewell", "Goodbye", "Au revoir"},
@@ -80,14 +32,14 @@ func stSeedPayload(t *testing.T) []byte {
 	})
 }
 
-func stSeedWantEN() map[string]map[string]string {
+func seedWantEN() map[string]map[string]string {
 	return map[string]map[string]string{
 		"home":  {"greeting": "Hello", "farewell": "Goodbye"},
 		"about": {"title": "About us"},
 	}
 }
 
-func TestTranslationClientDownloadXLSXRequestShape(t *testing.T) {
+func TestAPISourceDownloadXLSXRequestShape(t *testing.T) {
 	cases := []struct {
 		name       string
 		apiKey     string
@@ -117,10 +69,10 @@ func TestTranslationClientDownloadXLSXRequestShape(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			client := stClient(srv.URL, tc.apiKey)
-			body, err := client.DownloadXLSX(context.Background(), "app-1", stLogger())
+			client := testAPISource(srv.URL, tc.apiKey)
+			body, err := client.Fetch(context.Background(), discardLogger())
 			if err != nil {
-				t.Fatalf("DownloadXLSX: %v", err)
+				t.Fatalf("Fetch: %v", err)
 			}
 			if string(body) != "body-bytes" {
 				t.Errorf("body = %q, want %q", body, "body-bytes")
@@ -147,12 +99,12 @@ func TestTranslationClientDownloadXLSXRequestShape(t *testing.T) {
 
 func TestPullOnceFirstThenSkipThenReplace(t *testing.T) {
 	ctx := context.Background()
-	db := stOpenDB(t)
-	logger := stLogger()
+	db := openTestDB(t)
+	logger := discardLogger()
 
-	payload1 := stSeedPayload(t)
+	payload1 := seedXLSX(t)
 	// v2: "home"/"farewell" removed, "contact"/"email" added.
-	payload2 := stXLSX(t, [][]string{
+	payload2 := translationsXLSX(t, [][]string{
 		{"page", "key", "en", "fr"},
 		{"home", "greeting", "Hello", "Bonjour"},
 		{"about", "title", "About us", "A propos"},
@@ -175,15 +127,15 @@ func TestPullOnceFirstThenSkipThenReplace(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := stClient(srv.URL, "secret")
+	client := testAPISource(srv.URL, "secret")
 
 	// First pull: full import.
-	res1, err := PullOnce(ctx, db, client, "app-1", logger)
+	res1, err := PullOnce(ctx, db, client, logger)
 	if err != nil {
 		t.Fatalf("first PullOnce: %v", err)
 	}
-	if res1.Skipped {
-		t.Error("first pull: Skipped = true, want false")
+	if res1.Unchanged {
+		t.Error("first pull: Unchanged = true, want false")
 	}
 	if res1.Rows != 6 {
 		t.Errorf("first pull: Rows = %d, want 6", res1.Rows)
@@ -196,7 +148,7 @@ func TestPullOnceFirstThenSkipThenReplace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetStringsByPagesLang(en): %v", err)
 	}
-	if want := stSeedWantEN(); !reflect.DeepEqual(gotEN, want) {
+	if want := seedWantEN(); !reflect.DeepEqual(gotEN, want) {
 		t.Errorf("en strings after first pull = %v, want %v", gotEN, want)
 	}
 	gotFR, _, err := db.GetStringsByPagesLang(ctx, []string{"home"}, "fr")
@@ -210,12 +162,12 @@ func TestPullOnceFirstThenSkipThenReplace(t *testing.T) {
 		t.Errorf("fr strings after first pull = %v, want %v", gotFR, wantFR)
 	}
 
-	hashMeta, ok, err := db.GetMeta(ctx, metaKeyLastHash)
+	hashMeta, ok, err := db.GetMeta(ctx, metaKeyLastXLSXHash)
 	if err != nil {
-		t.Fatalf("GetMeta(%s): %v", metaKeyLastHash, err)
+		t.Fatalf("GetMeta(%s): %v", metaKeyLastXLSXHash, err)
 	}
 	if !ok || hashMeta != res1.Hash {
-		t.Errorf("meta %s = %q (ok=%v), want %q", metaKeyLastHash, hashMeta, ok, res1.Hash)
+		t.Errorf("meta %s = %q (ok=%v), want %q", metaKeyLastXLSXHash, hashMeta, ok, res1.Hash)
 	}
 	pullMeta, ok, err := db.GetMeta(ctx, metaKeyLastPull)
 	if err != nil {
@@ -234,12 +186,12 @@ func TestPullOnceFirstThenSkipThenReplace(t *testing.T) {
 		t.Fatalf("SetMeta: %v", err)
 	}
 
-	res2, err := PullOnce(ctx, db, client, "app-1", logger)
+	res2, err := PullOnce(ctx, db, client, logger)
 	if err != nil {
 		t.Fatalf("second PullOnce: %v", err)
 	}
-	if !res2.Skipped {
-		t.Error("second pull: Skipped = false, want true")
+	if !res2.Unchanged {
+		t.Error("second pull: Unchanged = false, want true")
 	}
 	if res2.Rows != 0 {
 		t.Errorf("second pull: Rows = %d, want 0", res2.Rows)
@@ -269,12 +221,12 @@ func TestPullOnceFirstThenSkipThenReplace(t *testing.T) {
 	// Third pull with changed payload: full replacement, removed row gone.
 	setPayload(payload2)
 
-	res3, err := PullOnce(ctx, db, client, "app-1", logger)
+	res3, err := PullOnce(ctx, db, client, logger)
 	if err != nil {
 		t.Fatalf("third PullOnce: %v", err)
 	}
-	if res3.Skipped {
-		t.Error("third pull: Skipped = true, want false")
+	if res3.Unchanged {
+		t.Error("third pull: Unchanged = true, want false")
 	}
 	if res3.Rows != 6 {
 		t.Errorf("third pull: Rows = %d, want 6", res3.Rows)
@@ -299,20 +251,20 @@ func TestPullOnceFirstThenSkipThenReplace(t *testing.T) {
 		t.Errorf("en strings after third pull = %v, want %v (removed row must be gone)", gotEN3, wantEN3)
 	}
 
-	hashMeta3, ok, err := db.GetMeta(ctx, metaKeyLastHash)
+	hashMeta3, ok, err := db.GetMeta(ctx, metaKeyLastXLSXHash)
 	if err != nil {
-		t.Fatalf("GetMeta(%s): %v", metaKeyLastHash, err)
+		t.Fatalf("GetMeta(%s): %v", metaKeyLastXLSXHash, err)
 	}
 	if !ok || hashMeta3 != res3.Hash {
-		t.Errorf("meta %s = %q (ok=%v), want %q", metaKeyLastHash, hashMeta3, ok, res3.Hash)
+		t.Errorf("meta %s = %q (ok=%v), want %q", metaKeyLastXLSXHash, hashMeta3, ok, res3.Hash)
 	}
 }
 
 func TestPullOnceUpstreamHTTPError(t *testing.T) {
 	ctx := context.Background()
-	db := stOpenDB(t)
-	logger := stLogger()
-	payload := stSeedPayload(t)
+	db := openTestDB(t)
+	logger := discardLogger()
+	payload := seedXLSX(t)
 
 	var mu sync.Mutex
 	fail := false
@@ -329,9 +281,9 @@ func TestPullOnceUpstreamHTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := stClient(srv.URL, "secret")
+	client := testAPISource(srv.URL, "secret")
 
-	res, err := PullOnce(ctx, db, client, "app-1", logger)
+	res, err := PullOnce(ctx, db, client, logger)
 	if err != nil {
 		t.Fatalf("seed PullOnce: %v", err)
 	}
@@ -340,7 +292,7 @@ func TestPullOnceUpstreamHTTPError(t *testing.T) {
 	fail = true
 	mu.Unlock()
 
-	_, err = PullOnce(ctx, db, client, "app-1", logger)
+	_, err = PullOnce(ctx, db, client, logger)
 	if err == nil {
 		t.Fatal("PullOnce on upstream 500: want error, got nil")
 	}
@@ -348,27 +300,27 @@ func TestPullOnceUpstreamHTTPError(t *testing.T) {
 		t.Errorf("error = %q, want it to mention status 500", err)
 	}
 
-	hashMeta, ok, err := db.GetMeta(ctx, metaKeyLastHash)
+	hashMeta, ok, err := db.GetMeta(ctx, metaKeyLastXLSXHash)
 	if err != nil {
-		t.Fatalf("GetMeta(%s): %v", metaKeyLastHash, err)
+		t.Fatalf("GetMeta(%s): %v", metaKeyLastXLSXHash, err)
 	}
 	if !ok || hashMeta != res.Hash {
-		t.Errorf("meta %s = %q (ok=%v), want unchanged %q", metaKeyLastHash, hashMeta, ok, res.Hash)
+		t.Errorf("meta %s = %q (ok=%v), want unchanged %q", metaKeyLastXLSXHash, hashMeta, ok, res.Hash)
 	}
 	gotEN, _, err := db.GetStringsByPagesLang(ctx, []string{"home", "about"}, "en")
 	if err != nil {
 		t.Fatalf("GetStringsByPagesLang: %v", err)
 	}
-	if want := stSeedWantEN(); !reflect.DeepEqual(gotEN, want) {
+	if want := seedWantEN(); !reflect.DeepEqual(gotEN, want) {
 		t.Errorf("en strings after failed pull = %v, want unchanged %v", gotEN, want)
 	}
 }
 
 func TestPullOnceInvalidXLSXBody(t *testing.T) {
 	ctx := context.Background()
-	db := stOpenDB(t)
-	logger := stLogger()
-	payload := stSeedPayload(t)
+	db := openTestDB(t)
+	logger := discardLogger()
+	payload := seedXLSX(t)
 
 	var mu sync.Mutex
 	junk := false
@@ -384,9 +336,9 @@ func TestPullOnceInvalidXLSXBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := stClient(srv.URL, "secret")
+	client := testAPISource(srv.URL, "secret")
 
-	res, err := PullOnce(ctx, db, client, "app-1", logger)
+	res, err := PullOnce(ctx, db, client, logger)
 	if err != nil {
 		t.Fatalf("seed PullOnce: %v", err)
 	}
@@ -395,7 +347,7 @@ func TestPullOnceInvalidXLSXBody(t *testing.T) {
 	junk = true
 	mu.Unlock()
 
-	_, err = PullOnce(ctx, db, client, "app-1", logger)
+	_, err = PullOnce(ctx, db, client, logger)
 	if err == nil {
 		t.Fatal("PullOnce on junk body: want parse error, got nil")
 	}
@@ -403,24 +355,24 @@ func TestPullOnceInvalidXLSXBody(t *testing.T) {
 		t.Errorf("error = %q, want a parse error, not a download error", err)
 	}
 
-	hashMeta, ok, err := db.GetMeta(ctx, metaKeyLastHash)
+	hashMeta, ok, err := db.GetMeta(ctx, metaKeyLastXLSXHash)
 	if err != nil {
-		t.Fatalf("GetMeta(%s): %v", metaKeyLastHash, err)
+		t.Fatalf("GetMeta(%s): %v", metaKeyLastXLSXHash, err)
 	}
 	if !ok || hashMeta != res.Hash {
-		t.Errorf("meta %s = %q (ok=%v), want unchanged %q", metaKeyLastHash, hashMeta, ok, res.Hash)
+		t.Errorf("meta %s = %q (ok=%v), want unchanged %q", metaKeyLastXLSXHash, hashMeta, ok, res.Hash)
 	}
 	gotEN, _, err := db.GetStringsByPagesLang(ctx, []string{"home", "about"}, "en")
 	if err != nil {
 		t.Fatalf("GetStringsByPagesLang: %v", err)
 	}
-	if want := stSeedWantEN(); !reflect.DeepEqual(gotEN, want) {
+	if want := seedWantEN(); !reflect.DeepEqual(gotEN, want) {
 		t.Errorf("en strings after failed pull = %v, want unchanged %v", gotEN, want)
 	}
 }
 
 func TestPullOnceContextCancelled(t *testing.T) {
-	db := stOpenDB(t)
+	db := openTestDB(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)
@@ -428,12 +380,12 @@ func TestPullOnceContextCancelled(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := stClient(srv.URL, "secret")
+	client := testAPISource(srv.URL, "secret")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := PullOnce(ctx, db, client, "app-1", stLogger())
+	_, err := PullOnce(ctx, db, client, discardLogger())
 	if err == nil {
 		t.Fatal("PullOnce with cancelled context: want error, got nil")
 	}

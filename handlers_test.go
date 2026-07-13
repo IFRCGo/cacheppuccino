@@ -3,56 +3,47 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
 
-const htTestHash = "51b23fc6f6c1de1c69a9b0f0f8a06f21c2e4a89f3a2e2b9d7c6a5e4d3c2b1a09"
+const seedHash = "51b23fc6f6c1de1c69a9b0f0f8a06f21c2e4a89f3a2e2b9d7c6a5e4d3c2b1a09"
 
-type htAPIError struct {
+type apiError struct {
 	Code    string            `json:"code"`
 	Message string            `json:"message"`
 	Details map[string]string `json:"details"`
 }
 
-type htEnvelope struct {
+type responseEnvelope struct {
 	Ok    bool            `json:"ok"`
 	Data  json.RawMessage `json:"data"`
-	Error *htAPIError     `json:"error"`
+	Error *apiError       `json:"error"`
 }
 
-type htStringsData struct {
+type stringsData struct {
 	Lang    string                       `json:"lang"`
 	Pages   []string                     `json:"pages"`
 	Strings map[string]map[string]string `json:"strings"`
 }
 
-func htNewServer(t *testing.T) *Server {
+func newTestServer(t *testing.T) *Server {
 	t.Helper()
 
-	db, err := OpenDB(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
 	return &Server{
-		db:     db,
+		db:     openTestDB(t),
 		ready:  &ReadyState{},
-		logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		logger: discardLogger(),
 	}
 }
 
-// htSeedFrench imports a small fixture of French strings and returns the
+// seedFrench imports a small fixture of French strings and returns the
 // import hash used as the ETag source.
-func htSeedFrench(t *testing.T, srv *Server) string {
+func seedFrench(t *testing.T, srv *Server) string {
 	t.Helper()
 
 	rows := []StringRow{
@@ -60,13 +51,13 @@ func htSeedFrench(t *testing.T, srv *Server) string {
 		{Page: "a", Key: "welcome", Lang: "fr", Value: "bienvenue", UpdatedAt: time.Now()},
 		{Page: "b", Key: "bye", Lang: "fr", Value: "au revoir", UpdatedAt: time.Now()},
 	}
-	if err := srv.db.ReplaceImport(context.Background(), rows, htTestHash, time.Now()); err != nil {
+	if err := srv.db.ReplaceImport(context.Background(), rows, seedHash, time.Now()); err != nil {
 		t.Fatalf("ReplaceImport: %v", err)
 	}
-	return htTestHash
+	return seedHash
 }
 
-func htGet(t *testing.T, h http.Handler, target string, header map[string]string) *httptest.ResponseRecorder {
+func doGet(t *testing.T, h http.Handler, target string, header map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 
 	req := httptest.NewRequest(http.MethodGet, target, nil)
@@ -78,17 +69,17 @@ func htGet(t *testing.T, h http.Handler, target string, header map[string]string
 	return rec
 }
 
-func htDecodeEnvelope(t *testing.T, rec *httptest.ResponseRecorder) htEnvelope {
+func decodeEnvelope(t *testing.T, rec *httptest.ResponseRecorder) responseEnvelope {
 	t.Helper()
 
-	var env htEnvelope
+	var env responseEnvelope
 	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
 		t.Fatalf("decode envelope: %v (body: %q)", err, rec.Body.String())
 	}
 	return env
 }
 
-func htDecodeData(t *testing.T, env htEnvelope, out any) {
+func decodeData(t *testing.T, env responseEnvelope, out any) {
 	t.Helper()
 
 	if env.Data == nil {
@@ -100,8 +91,8 @@ func htDecodeData(t *testing.T, env htEnvelope, out any) {
 }
 
 func TestHealthz(t *testing.T) {
-	srv := htNewServer(t)
-	rec := htGet(t, srv.routes(), "/healthz", nil)
+	srv := newTestServer(t)
+	rec := doGet(t, srv.routes(), "/healthz", nil)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -115,7 +106,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestReadyz(t *testing.T) {
-	srv := htNewServer(t)
+	srv := newTestServer(t)
 	h := srv.routes()
 
 	// Always 200 while the process is up, even before any servable data
@@ -123,18 +114,18 @@ func TestReadyz(t *testing.T) {
 	for _, ready := range []bool{false, true} {
 		srv.ready.SetReady(ready)
 
-		rec := htGet(t, h, "/readyz", nil)
+		rec := doGet(t, h, "/readyz", nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("ready=%v: status = %d, want %d", ready, rec.Code, http.StatusOK)
 		}
-		env := htDecodeEnvelope(t, rec)
+		env := decodeEnvelope(t, rec)
 		if !env.Ok {
 			t.Errorf("ready=%v: ok = false, want true", ready)
 		}
 		var data struct {
 			Status string `json:"status"`
 		}
-		htDecodeData(t, env, &data)
+		decodeData(t, env, &data)
 		if data.Status != "ready" {
 			t.Errorf("ready=%v: status = %q, want %q", ready, data.Status, "ready")
 		}
@@ -142,20 +133,20 @@ func TestReadyz(t *testing.T) {
 }
 
 func TestStatus(t *testing.T) {
-	srv := htNewServer(t)
+	srv := newTestServer(t)
 	h := srv.routes()
 
-	rec := htGet(t, h, "/status", nil)
+	rec := doGet(t, h, "/status", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	env := htDecodeEnvelope(t, rec)
+	env := decodeEnvelope(t, rec)
 	if !env.Ok {
 		t.Fatalf("ok = false, want true")
 	}
 
 	var fields map[string]any
-	htDecodeData(t, env, &fields)
+	decodeData(t, env, &fields)
 	for _, k := range []string{"last_pull", "last_hash", "ready", "version"} {
 		if _, present := fields[k]; !present {
 			t.Errorf("data missing field %q", k)
@@ -163,7 +154,7 @@ func TestStatus(t *testing.T) {
 	}
 
 	var data StatusResponse
-	htDecodeData(t, env, &data)
+	decodeData(t, env, &data)
 	if data.Version != "dev" {
 		t.Errorf("version = %q, want %q", data.Version, "dev")
 	}
@@ -174,14 +165,14 @@ func TestStatus(t *testing.T) {
 		t.Errorf("last_hash = %q, want empty before import", data.LastHash)
 	}
 
-	hash := htSeedFrench(t, srv)
+	hash := seedFrench(t, srv)
 	srv.ready.SetReady(true)
 
-	rec = htGet(t, h, "/status", nil)
+	rec = doGet(t, h, "/status", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("after import: status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	htDecodeData(t, htDecodeEnvelope(t, rec), &data)
+	decodeData(t, decodeEnvelope(t, rec), &data)
 	if data.LastHash != hash {
 		t.Errorf("last_hash = %q, want %q", data.LastHash, hash)
 	}
@@ -194,7 +185,7 @@ func TestStatus(t *testing.T) {
 }
 
 func TestGetStringsValidation(t *testing.T) {
-	srv := htNewServer(t)
+	srv := newTestServer(t)
 	h := srv.routes()
 
 	tests := []struct {
@@ -216,11 +207,11 @@ func TestGetStringsValidation(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := htGet(t, h, tc.target, nil)
+			rec := doGet(t, h, tc.target, nil)
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 			}
-			env := htDecodeEnvelope(t, rec)
+			env := decodeEnvelope(t, rec)
 			if env.Ok {
 				t.Errorf("ok = true, want false")
 			}
@@ -238,16 +229,16 @@ func TestGetStringsValidation(t *testing.T) {
 }
 
 func TestGetStringsLangNormalization(t *testing.T) {
-	srv := htNewServer(t)
-	htSeedFrench(t, srv)
+	srv := newTestServer(t)
+	seedFrench(t, srv)
 
-	rec := htGet(t, srv.routes(), "/strings?lang=FR&page=a", nil)
+	rec := doGet(t, srv.routes(), "/strings?lang=FR&page=a", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 
-	var data htStringsData
-	htDecodeData(t, htDecodeEnvelope(t, rec), &data)
+	var data stringsData
+	decodeData(t, decodeEnvelope(t, rec), &data)
 	if data.Lang != "fr" {
 		t.Errorf("lang = %q, want %q", data.Lang, "fr")
 	}
@@ -257,8 +248,8 @@ func TestGetStringsLangNormalization(t *testing.T) {
 }
 
 func TestGetStringsPagesParsing(t *testing.T) {
-	srv := htNewServer(t)
-	htSeedFrench(t, srv)
+	srv := newTestServer(t)
+	seedFrench(t, srv)
 	h := srv.routes()
 
 	tests := []struct {
@@ -276,13 +267,13 @@ func TestGetStringsPagesParsing(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := htGet(t, h, "/strings?lang=fr&"+tc.query, nil)
+			rec := doGet(t, h, "/strings?lang=fr&"+tc.query, nil)
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
 			}
 
-			var data htStringsData
-			htDecodeData(t, htDecodeEnvelope(t, rec), &data)
+			var data stringsData
+			decodeData(t, decodeEnvelope(t, rec), &data)
 			if !reflect.DeepEqual(data.Pages, tc.wantPages) {
 				t.Errorf("pages = %v, want %v", data.Pages, tc.wantPages)
 			}
@@ -299,16 +290,16 @@ func TestGetStringsPagesParsing(t *testing.T) {
 }
 
 func TestGetStringsUnknownPage(t *testing.T) {
-	srv := htNewServer(t)
-	htSeedFrench(t, srv)
+	srv := newTestServer(t)
+	seedFrench(t, srv)
 
-	rec := htGet(t, srv.routes(), "/strings?lang=fr&page=a&page=nope", nil)
+	rec := doGet(t, srv.routes(), "/strings?lang=fr&page=a&page=nope", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 
-	var data htStringsData
-	htDecodeData(t, htDecodeEnvelope(t, rec), &data)
+	var data stringsData
+	decodeData(t, decodeEnvelope(t, rec), &data)
 	unknown, present := data.Strings["nope"]
 	if !present {
 		t.Fatalf("strings missing unknown page %q", "nope")
@@ -322,9 +313,9 @@ func TestGetStringsUnknownPage(t *testing.T) {
 }
 
 func TestGetStringsNoETagBeforeImport(t *testing.T) {
-	srv := htNewServer(t)
+	srv := newTestServer(t)
 
-	rec := htGet(t, srv.routes(), "/strings?lang=fr&page=a", nil)
+	rec := doGet(t, srv.routes(), "/strings?lang=fr&page=a", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
@@ -337,8 +328,8 @@ func TestGetStringsNoETagBeforeImport(t *testing.T) {
 }
 
 func TestGetStringsETag(t *testing.T) {
-	srv := htNewServer(t)
-	hash := htSeedFrench(t, srv)
+	srv := newTestServer(t)
+	hash := seedFrench(t, srv)
 	h := srv.routes()
 	etag := `"` + hash + `"`
 
@@ -361,7 +352,7 @@ func TestGetStringsETag(t *testing.T) {
 			if tc.ifNoneMatch != "" {
 				header["If-None-Match"] = tc.ifNoneMatch
 			}
-			rec := htGet(t, h, "/strings?lang=fr&page=a", header)
+			rec := doGet(t, h, "/strings?lang=fr&page=a", header)
 
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
@@ -381,8 +372,8 @@ func TestGetStringsETag(t *testing.T) {
 				return
 			}
 
-			var data htStringsData
-			htDecodeData(t, htDecodeEnvelope(t, rec), &data)
+			var data stringsData
+			decodeData(t, decodeEnvelope(t, rec), &data)
 			if got := data.Strings["a"]["hello"]; got != "bonjour" {
 				t.Errorf("strings.a.hello = %q, want %q", got, "bonjour")
 			}

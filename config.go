@@ -3,17 +3,27 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"slices"
 	"time"
 )
 
+// Translation source kinds: the real IFRC API, or a plain XLSX URL used
+// to mock the service on QA/alpha instances.
+const (
+	sourceAPI = "api"
+	sourceURL = "url"
+)
+
 type Config struct {
 	ListenAddr               string
 	SQLitePath               string
+	TranslationSource        string
 	TranslationBaseURL       string
 	TranslationApplicationID string
 	TranslationAPIKey        string
+	TranslationXLSXURL       string
 	HTTPTimeout              time.Duration
 	PullInterval             time.Duration
 	InitialPullDeadline      time.Duration
@@ -27,14 +37,6 @@ var validLogLevels = []string{"debug", "info", "warn", "error"}
 // so a misconfigured deployment reports all mistakes at once.
 func LoadConfig() (Config, error) {
 	var errs []error
-
-	requireEnv := func(k string) string {
-		v := os.Getenv(k)
-		if v == "" {
-			errs = append(errs, fmt.Errorf("missing required env: %s", k))
-		}
-		return v
-	}
 
 	envDuration := func(k string, def time.Duration) time.Duration {
 		v := os.Getenv(k)
@@ -50,15 +52,34 @@ func LoadConfig() (Config, error) {
 	}
 
 	cfg := Config{
-		ListenAddr:               env("LISTEN_ADDR", ":8080"),
-		SQLitePath:               env("SQLITE_PATH", "/data/cacheppuccino.db"),
-		TranslationBaseURL:       requireEnv("TRANSLATION_BASE_URL"),
-		TranslationApplicationID: requireEnv("TRANSLATION_APPLICATION_ID"),
-		TranslationAPIKey:        requireEnv("TRANSLATION_API_KEY"),
+		ListenAddr:               envOr("LISTEN_ADDR", ":8080"),
+		SQLitePath:               envOr("SQLITE_PATH", "/data/cacheppuccino.db"),
+		TranslationSource:        envOr("TRANSLATION_SOURCE", sourceAPI),
+		TranslationBaseURL:       os.Getenv("TRANSLATION_BASE_URL"),
+		TranslationApplicationID: os.Getenv("TRANSLATION_APPLICATION_ID"),
+		TranslationAPIKey:        os.Getenv("TRANSLATION_API_KEY"),
+		TranslationXLSXURL:       os.Getenv("TRANSLATION_XLSX_URL"),
 		HTTPTimeout:              envDuration("HTTP_TIMEOUT", 30*time.Second),
 		PullInterval:             envDuration("PULL_INTERVAL", 10*time.Minute),
 		InitialPullDeadline:      envDuration("INITIAL_PULL_DEADLINE", 45*time.Second),
-		LogLevel:                 env("LOG_LEVEL", "info"),
+		LogLevel:                 envOr("LOG_LEVEL", "info"),
+	}
+
+	switch cfg.TranslationSource {
+	case sourceAPI:
+		for _, k := range []string{"TRANSLATION_BASE_URL", "TRANSLATION_APPLICATION_ID", "TRANSLATION_API_KEY"} {
+			if os.Getenv(k) == "" {
+				errs = append(errs, fmt.Errorf("missing required env: %s (required when TRANSLATION_SOURCE=api)", k))
+			}
+		}
+	case sourceURL:
+		if cfg.TranslationXLSXURL == "" {
+			errs = append(errs, errors.New("missing required env: TRANSLATION_XLSX_URL (required when TRANSLATION_SOURCE=url)"))
+		} else if u, err := url.Parse(cfg.TranslationXLSXURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			errs = append(errs, fmt.Errorf("invalid TRANSLATION_XLSX_URL: %q (must be an http(s) URL)", cfg.TranslationXLSXURL))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("invalid TRANSLATION_SOURCE: %q (valid: api, url)", cfg.TranslationSource))
 	}
 
 	if cfg.HTTPTimeout <= 0 {
@@ -82,7 +103,7 @@ func LoadConfig() (Config, error) {
 	return cfg, nil
 }
 
-func env(k, def string) string {
+func envOr(k, def string) string {
 	v := os.Getenv(k)
 	if v == "" {
 		return def

@@ -19,6 +19,6 @@ type StringModel struct {
 type MetaModel struct {
 	bun.BaseModel `bun:"table:meta"`
 
-	K string `bun:"k,pk,notnull"`
-	V string `bun:"v,notnull"`
+	Key   string `bun:"k,pk,notnull"`
+	Value string `bun:"v,notnull"`
 }

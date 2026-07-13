@@ -58,3 +58,6 @@ data/
 # -----------------------------
 tmp/
 vendor/
+
+# build output
+/cacheppuccino

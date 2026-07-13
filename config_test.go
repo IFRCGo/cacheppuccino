@@ -6,12 +6,14 @@ import (
 	"time"
 )
 
-// ctAllConfigEnvVars is every env var LoadConfig reads. Each test sets all of
+// allConfigEnvVars is every env var LoadConfig reads. Each test sets all of
 // them explicitly ("" simulates unset) to shield tests from the host env.
-var ctAllConfigEnvVars = []string{
+var allConfigEnvVars = []string{
+	"TRANSLATION_SOURCE",
 	"TRANSLATION_BASE_URL",
 	"TRANSLATION_APPLICATION_ID",
 	"TRANSLATION_API_KEY",
+	"TRANSLATION_XLSX_URL",
 	"LISTEN_ADDR",
 	"SQLITE_PATH",
 	"HTTP_TIMEOUT",
@@ -20,17 +22,17 @@ var ctAllConfigEnvVars = []string{
 	"LOG_LEVEL",
 }
 
-// ctSetConfigEnv sets every config env var, using values from overrides and
+// setConfigEnv sets every config env var, using values from overrides and
 // "" for anything not listed there.
-func ctSetConfigEnv(t *testing.T, overrides map[string]string) {
+func setConfigEnv(t *testing.T, overrides map[string]string) {
 	t.Helper()
-	for _, k := range ctAllConfigEnvVars {
+	for _, k := range allConfigEnvVars {
 		t.Setenv(k, overrides[k])
 	}
 }
 
-// ctRequiredEnv sets only the three required vars to placeholder values.
-func ctRequiredEnv() map[string]string {
+// requiredAPIEnv sets only the three required vars to placeholder values.
+func requiredAPIEnv() map[string]string {
 	return map[string]string{
 		"TRANSLATION_BASE_URL":       "https://translate.example.com",
 		"TRANSLATION_APPLICATION_ID": "app-id",
@@ -39,7 +41,7 @@ func ctRequiredEnv() map[string]string {
 }
 
 func TestLoadConfigDefaults(t *testing.T) {
-	ctSetConfigEnv(t, ctRequiredEnv())
+	setConfigEnv(t, requiredAPIEnv())
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -73,6 +75,88 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if got, want := cfg.LogLevel, "info"; got != want {
 		t.Errorf("LogLevel = %q, want %q", got, want)
 	}
+	if got, want := cfg.TranslationSource, "api"; got != want {
+		t.Errorf("TranslationSource = %q, want %q", got, want)
+	}
+}
+
+func TestLoadConfigSourceMatrix(t *testing.T) {
+	tests := []struct {
+		name        string
+		env         map[string]string
+		wantErr     bool
+		wantInError []string
+	}{
+		{
+			name: "url mode requires only the xlsx url",
+			env: map[string]string{
+				"TRANSLATION_SOURCE":   "url",
+				"TRANSLATION_XLSX_URL": "https://files.example.com/translations.xlsx",
+			},
+		},
+		{
+			name:        "url mode without xlsx url fails",
+			env:         map[string]string{"TRANSLATION_SOURCE": "url"},
+			wantErr:     true,
+			wantInError: []string{"TRANSLATION_XLSX_URL"},
+		},
+		{
+			name: "url mode rejects non-http url",
+			env: map[string]string{
+				"TRANSLATION_SOURCE":   "url",
+				"TRANSLATION_XLSX_URL": "ftp://files.example.com/translations.xlsx",
+			},
+			wantErr:     true,
+			wantInError: []string{"TRANSLATION_XLSX_URL", "http(s)"},
+		},
+		{
+			name:        "invalid source value fails",
+			env:         map[string]string{"TRANSLATION_SOURCE": "s3"},
+			wantErr:     true,
+			wantInError: []string{"TRANSLATION_SOURCE", `"s3"`},
+		},
+		{
+			name: "api mode still requires the api trio",
+			env: map[string]string{
+				"TRANSLATION_SOURCE":   "api",
+				"TRANSLATION_XLSX_URL": "https://files.example.com/translations.xlsx",
+			},
+			wantErr: true,
+			wantInError: []string{
+				"TRANSLATION_BASE_URL",
+				"TRANSLATION_APPLICATION_ID",
+				"TRANSLATION_API_KEY",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setConfigEnv(t, tt.env)
+
+			cfg, err := LoadConfig()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("LoadConfig() error = nil, want error")
+				}
+				for _, want := range tt.wantInError {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q does not contain %q", err.Error(), want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadConfig() error = %v, want nil", err)
+			}
+			if cfg.TranslationSource != tt.env["TRANSLATION_SOURCE"] {
+				t.Errorf("TranslationSource = %q, want %q", cfg.TranslationSource, tt.env["TRANSLATION_SOURCE"])
+			}
+			if cfg.TranslationXLSXURL != tt.env["TRANSLATION_XLSX_URL"] {
+				t.Errorf("TranslationXLSXURL = %q, want %q", cfg.TranslationXLSXURL, tt.env["TRANSLATION_XLSX_URL"])
+			}
+		})
+	}
 }
 
 func TestLoadConfigMissingRequired(t *testing.T) {
@@ -84,9 +168,9 @@ func TestLoadConfigMissingRequired(t *testing.T) {
 
 	for _, missing := range required {
 		t.Run(missing, func(t *testing.T) {
-			env := ctRequiredEnv()
+			env := requiredAPIEnv()
 			env[missing] = ""
-			ctSetConfigEnv(t, env)
+			setConfigEnv(t, env)
 
 			_, err := LoadConfig()
 			if err == nil {
@@ -99,7 +183,7 @@ func TestLoadConfigMissingRequired(t *testing.T) {
 	}
 
 	t.Run("all missing", func(t *testing.T) {
-		ctSetConfigEnv(t, nil)
+		setConfigEnv(t, nil)
 
 		_, err := LoadConfig()
 		if err == nil {
@@ -163,11 +247,11 @@ func TestLoadConfigInvalidValues(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env := ctRequiredEnv()
+			env := requiredAPIEnv()
 			for k, v := range tt.overrides {
 				env[k] = v
 			}
-			ctSetConfigEnv(t, env)
+			setConfigEnv(t, env)
 
 			_, err := LoadConfig()
 			if err == nil {
@@ -185,11 +269,11 @@ func TestLoadConfigInvalidValues(t *testing.T) {
 func TestLoadConfigMultipleProblems(t *testing.T) {
 	// Missing one required var plus a bad duration plus a bad log level:
 	// all must be reported in the single joined error.
-	env := ctRequiredEnv()
+	env := requiredAPIEnv()
 	env["TRANSLATION_API_KEY"] = ""
 	env["PULL_INTERVAL"] = "bogus"
 	env["LOG_LEVEL"] = "loud"
-	ctSetConfigEnv(t, env)
+	setConfigEnv(t, env)
 
 	_, err := LoadConfig()
 	if err == nil {
@@ -208,9 +292,9 @@ func TestLoadConfigMultipleProblems(t *testing.T) {
 
 func TestLoadConfigZeroInitialPullDeadline(t *testing.T) {
 	// Zero means "no deadline" and must be accepted.
-	env := ctRequiredEnv()
+	env := requiredAPIEnv()
 	env["INITIAL_PULL_DEADLINE"] = "0s"
-	ctSetConfigEnv(t, env)
+	setConfigEnv(t, env)
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -222,14 +306,14 @@ func TestLoadConfigZeroInitialPullDeadline(t *testing.T) {
 }
 
 func TestLoadConfigValidOverrides(t *testing.T) {
-	env := ctRequiredEnv()
+	env := requiredAPIEnv()
 	env["LISTEN_ADDR"] = "127.0.0.1:9999"
 	env["SQLITE_PATH"] = "/tmp/other.db"
 	env["HTTP_TIMEOUT"] = "5s"
 	env["PULL_INTERVAL"] = "1h30m"
 	env["INITIAL_PULL_DEADLINE"] = "250ms"
 	env["LOG_LEVEL"] = "debug"
-	ctSetConfigEnv(t, env)
+	setConfigEnv(t, env)
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -259,9 +343,9 @@ func TestLoadConfigValidOverrides(t *testing.T) {
 func TestLoadConfigValidLogLevels(t *testing.T) {
 	for _, level := range []string{"debug", "info", "warn", "error"} {
 		t.Run(level, func(t *testing.T) {
-			env := ctRequiredEnv()
+			env := requiredAPIEnv()
 			env["LOG_LEVEL"] = level
-			ctSetConfigEnv(t, env)
+			setConfigEnv(t, env)
 
 			cfg, err := LoadConfig()
 			if err != nil {

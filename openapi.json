@@ -111,11 +111,20 @@
                         "last_hash": {
                           "type": "string"
                         },
+                        "last_import_rows": {
+                          "type": "integer"
+                        },
                         "last_pull": {
+                          "type": "string"
+                        },
+                        "last_pull_error": {
                           "type": "string"
                         },
                         "ready": {
                           "type": "boolean"
+                        },
+                        "source": {
+                          "type": "string"
                         },
                         "version": {
                           "type": "string"

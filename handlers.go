@@ -3,15 +3,17 @@ package main
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/rs/cors"
 )
 
 type Server struct {
-	db     *DB
-	ready  *ReadyState
-	logger *slog.Logger
+	db         *DB
+	ready      *ReadyState
+	logger     *slog.Logger
+	sourceName string
 }
 
 type StringsResponse struct {
@@ -29,15 +31,18 @@ type ReadyResponse struct {
 }
 
 type StatusResponse struct {
-	LastPull string `json:"last_pull"`
-	LastHash string `json:"last_hash"`
-	Ready    bool   `json:"ready"`
-	Version  string `json:"version"`
+	Source         string `json:"source"`
+	LastPull       string `json:"last_pull"`
+	LastHash       string `json:"last_hash"`
+	LastPullError  string `json:"last_pull_error"`
+	LastImportRows int    `json:"last_import_rows"`
+	Ready          bool   `json:"ready"`
+	Version        string `json:"version"`
 }
 
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /strings", s.handleGetStrings)
+	mux.HandleFunc("GET /strings", s.handleStrings)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /status", s.handleStatus)
@@ -78,26 +83,36 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	lastPull, _, err := s.db.GetMeta(r.Context(), metaKeyLastPull)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal_error", "failed to read status", nil)
-		return
+	meta := map[string]string{
+		metaKeyLastPull:       "",
+		metaKeyLastXLSXHash:   "",
+		metaKeyLastPullError:  "",
+		metaKeyLastImportRows: "",
 	}
-	lastHash, _, err := s.db.GetMeta(r.Context(), metaKeyLastHash)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal_error", "failed to read status", nil)
-		return
+	for k := range meta {
+		v, _, err := s.db.GetMeta(r.Context(), k)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal_error", "failed to read status", nil)
+			return
+		}
+		meta[k] = v
 	}
 
+	// Absent or malformed count reads as 0.
+	importRows, _ := strconv.Atoi(meta[metaKeyLastImportRows])
+
 	writeOK(w, http.StatusOK, StatusResponse{
-		LastPull: lastPull,
-		LastHash: lastHash,
-		Ready:    s.ready.IsReady(),
-		Version:  version,
+		Source:         s.sourceName,
+		LastPull:       meta[metaKeyLastPull],
+		LastHash:       meta[metaKeyLastXLSXHash],
+		LastPullError:  meta[metaKeyLastPullError],
+		LastImportRows: importRows,
+		Ready:          s.ready.IsReady(),
+		Version:        version,
 	})
 }
 
-func (s *Server) handleGetStrings(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStrings(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	// Language codes are case-insensitive (BCP 47); import stores lowercase.
@@ -144,7 +159,7 @@ func (s *Server) handleGetStrings(w http.ResponseWriter, r *http.Request) {
 	// so the import hash is a valid ETag for every /strings URL.
 	// Only 200/304 responses carry the caching headers.
 	var etag string
-	if hash, ok, err := s.db.GetMeta(r.Context(), metaKeyLastHash); err == nil && ok {
+	if hash, ok, err := s.db.GetMeta(r.Context(), metaKeyLastXLSXHash); err == nil && ok {
 		etag = `"` + hash + `"`
 		if etagMatches(r.Header.Get("If-None-Match"), etag) {
 			setCacheHeaders(w, etag)
