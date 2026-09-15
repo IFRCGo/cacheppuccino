@@ -10,6 +10,7 @@ metadata:
     app.kubernetes.io/instance: release-name
     app.kubernetes.io/version: "0.1.0"
     app.kubernetes.io/managed-by: Helm
+
 ---
 # Source: cacheppuccino-helm/templates/secret.yaml
 apiVersion: v1
@@ -24,6 +25,7 @@ metadata:
     app.kubernetes.io/managed-by: Helm
 type: Opaque
 stringData:
+
 ---
 # Source: cacheppuccino-helm/templates/configmap.yaml
 apiVersion: v1
@@ -47,6 +49,7 @@ data:
   TRANSLATION_BASE_URL: ""
   TRANSLATION_SOURCE: "url"
   TRANSLATION_XLSX_URL: "https://example.com/ifrc-go/translations.xlsx"
+
 ---
 # Source: cacheppuccino-helm/templates/pvc.yaml
 apiVersion: v1
@@ -66,6 +69,7 @@ spec:
   resources:
     requests:
       storage: "512Mi"
+
 ---
 # Source: cacheppuccino-helm/templates/service.yaml
 apiVersion: v1
@@ -88,6 +92,7 @@ spec:
   selector:
     app.kubernetes.io/name: cacheppuccino-helm
     app.kubernetes.io/instance: release-name
+
 ---
 # Source: cacheppuccino-helm/templates/deployment.yaml
 apiVersion: apps/v1
@@ -165,6 +170,7 @@ spec:
         - name: sqlite
           persistentVolumeClaim:
             claimName: release-name-cacheppuccino-helm
+
 ---
 # Source: cacheppuccino-helm/templates/ingress.yaml
 apiVersion: networking.k8s.io/v1
@@ -178,6 +184,7 @@ metadata:
     app.kubernetes.io/version: "0.1.0"
     app.kubernetes.io/managed-by: Helm
 spec:
+  ingressClassName: traefik
   rules:
     - host: "cacheppuccino-alpha-1.ifrc-go.dev.togglecorp.com"
       http:
