@@ -1,7 +1,6 @@
 # NOTE: test data for production, using values production.yaml
 ingress:
   host: cacheppuccino-test-prod.ifrc.org
-  className: nginx
   tls:
     enabled: true
     secretName: cacheppuccino-helm-secret-cert-test

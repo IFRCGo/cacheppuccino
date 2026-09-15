@@ -1,8 +1,11 @@
 tests:
-  alpha-1.yaml: []
+  alpha.yaml:
+    - values/traefik.yaml
   staging.yaml:
     - values/go-deploy.yaml
     - values/staging.yaml
+    - values/traefik.yaml
   production.yaml:
     - values/go-deploy.yaml
     - values/production.yaml
+    - values/traefik.yaml

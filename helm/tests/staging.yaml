@@ -1,7 +1,6 @@
 # NOTE: test data for staging, using values staging.yaml
 ingress:
   host: cacheppuccino-test-stage.ifrc.org
-  className: nginx
   tls:
     enabled: true
     secretName: cacheppuccino-helm-secret-cert-test
