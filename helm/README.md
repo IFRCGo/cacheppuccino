@@ -45,7 +45,7 @@ rather than dropping traffic.
 | `service.yaml` | Public `ClusterIP` on 8080 |
 | `service-headless.yaml` | Peer discovery; publishes not-ready addresses so a broken pod stays visible on `/cluster` |
 | `rbac.yaml` | `Role`/`RoleBinding` for `get`/`create`/`update` on one Lease |
-| `poddisruptionbudget.yaml` | `minAvailable: 2`, so a drain always leaves a warm peer to hydrate from |
+| `poddisruptionbudget.yaml` | `maxUnavailable: 1`, so a drain always leaves a warm peer to hydrate from, at any replica count |
 | `hpa.yaml` | Disabled; replicas buy availability today, not throughput |
 | `configmap.yaml`, `secret.yaml`, `secret-provider-class.yaml` | Configuration and Key Vault secrets |
 | `ingress.yaml` | Traefik ingress for the public port only |
@@ -65,9 +65,9 @@ what produced an incident where every probe was green while the API failed.
 | `/readyz` | kubelet readiness | Only on this pod's own data |
 | `/monitor` | External uptime check | Yes -- it is the only one that may |
 
-`/monitor` answers 503 when a fleet alarm fires: no primary, a stale
-snapshot, replicas holding different snapshots, an unhealthy pod, or
-repeated pull failures. None of that makes a pod unready, because routing
+`/monitor` answers 503 when a fleet alarm fires: no primary, no successful
+pull for `ALARM_SNAPSHOT_AGE`, replicas holding different snapshots, an
+unhealthy pod, or repeated pull failures. None of that makes a pod unready, because routing
 staleness into readiness would turn a data problem into a total outage.
 
 Nothing falls back automatically when no pod can pull, so this alert is the

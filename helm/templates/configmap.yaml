@@ -6,9 +6,12 @@ metadata:
   labels:
     {{- include "cacheppuccino.labels" . | nindent 4 }}
 data:
-  {{- if .Values.cache.enabled }}
-  CACHE_DIR: {{ .Values.cache.mountPath | quote }}
-  {{- end }}
+  # Always emitted: an absent CACHE_DIR would fall back to the built-in
+  # default path, which has no volume behind it when the cache is disabled.
+  CACHE_DIR: {{ if .Values.cache.enabled }}{{ .Values.cache.mountPath | quote }}{{ else }}""{{ end }}
+  # Derived from the port the container and the headless Service publish, so
+  # the listener cannot bind somewhere peers are not looking.
+  INTERNAL_LISTEN_ADDR: {{ printf ":%v" .Values.service.internalPort | quote }}
   {{- range $name, $value := .Values.env }}
   {{ $name }}: {{ tpl $value $ | quote }}
   {{- end }}

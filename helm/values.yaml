@@ -105,9 +105,10 @@ preStopSleepSeconds: 10
 
 podDisruptionBudget:
   enabled: true
-  # With 1, a drain can leave a single pod, and evicting that one leaves a
-  # replacement with no warm peer to hydrate from.
-  minAvailable: 2
+  # Expressed as maxUnavailable so it stays satisfiable at any replicaCount:
+  # minAvailable: 2 blocks every drain forever once replicas drop to 1 or 2.
+  # One at a time also always leaves a warm peer to hydrate from.
+  maxUnavailable: 1
 
 topologySpreadConstraints:
   enabled: true
@@ -140,9 +141,10 @@ cache:
   mountPath: /cache
   sizeLimit: 256Mi
 
+# INTERNAL_LISTEN_ADDR is not listed here: the ConfigMap derives it from
+# service.internalPort so the two cannot drift.
 env:
   LISTEN_ADDR: ":8080"
-  INTERNAL_LISTEN_ADDR: ":8081"
   LOG_LEVEL: "info"
   # api: pull from the IFRC translation service (needs TRANSLATION_BASE_URL,
   #      TRANSLATION_APPLICATION_ID and the TRANSLATION_API_KEY secret).
