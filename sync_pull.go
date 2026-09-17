@@ -203,7 +203,7 @@ func (s *Syncer) pullApp(ctx context.Context, appID, kind string) {
 		// Shutdown is not a pull failure; the parent context is the process one.
 		if ctx.Err() == nil {
 			st.recordFailure(err)
-			logger.Warn(kind+" pull failed; serving cached data if any", slog.String("err", err.Error()))
+			s.logPullFailure(logger, appID, kind+" pull failed; serving cached data if any", err)
 		}
 		return
 	}
@@ -224,14 +224,14 @@ func (s *Syncer) pullApp(ctx context.Context, appID, kind string) {
 	rows, err := ParseXLSX(xlsx)
 	if err != nil {
 		st.recordFailure(err)
-		logger.Warn(kind+" pull parse failed; serving cached data if any", slog.String("err", err.Error()))
+		s.logPullFailure(logger, appID, kind+" pull parse failed; serving cached data if any", err)
 		return
 	}
 
 	snap := NewSnapshot(appID, hash, s.now(), rows, xlsx)
 	if !snap.Servable() {
 		st.recordFailure(errEmptyImport)
-		logger.Warn(kind + " pull produced no servable rows; keeping previous data")
+		s.logPullFailure(logger, appID, kind+" pull produced no servable rows; keeping previous data", errEmptyImport)
 		return
 	}
 
@@ -334,5 +334,21 @@ func (s *Syncer) syncAppFromPeers(ctx context.Context, appID string, adoptJitter
 		slog.String("app", appID),
 		slog.String("hash", snap.Hash),
 		slog.Int("rows", snap.RowCount),
+	)
+}
+
+// logPullFailure escalates to error once the failures are sustained, so an
+// alert keyed on error level fires on a real outage without firing on a
+// single blip.
+func (s *Syncer) logPullFailure(logger *slog.Logger, appID, msg string, err error) {
+	_, _, failures := s.state.App(appID).snapshot()
+
+	level := slog.LevelWarn
+	if failures >= s.cfg.AlarmPullFailures {
+		level = slog.LevelError
+	}
+	logger.Log(context.Background(), level, msg,
+		slog.String("err", err.Error()),
+		slog.Int("consecutive_failures", failures),
 	)
 }
