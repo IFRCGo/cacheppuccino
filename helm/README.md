@@ -73,6 +73,16 @@ staleness into readiness would turn a data problem into a total outage.
 Nothing falls back automatically when no pod can pull, so this alert is the
 thing that gets it noticed. Point the uptime check at `/monitor`.
 
+## Changing configuration
+
+`envFrom` is read once when a container starts, so a changed `env:` value
+reaches the ConfigMap but not a running pod. The pod template carries a
+`checksum/config` annotation over the rendered ConfigMap, so `helm upgrade`
+rolls the pods whenever configuration actually changes. Do not remove it on
+the assumption that the stakater reloader annotation covers this -- that
+depends on a controller being installed in the target cluster, and the chart
+should be correct without one.
+
 ## Snapshots
 
 `helm/snapshots/*.yaml` are committed renders checked by CI. Regenerate them

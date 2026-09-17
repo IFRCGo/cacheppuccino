@@ -198,6 +198,11 @@ spec:
         app.kubernetes.io/name: cacheppuccino-helm
         app.kubernetes.io/instance: release-name
         azure.workload.identity/use: "true"
+      annotations:
+        # Roll the pods when configuration changes. envFrom is read once at
+        # container start, so without this a values change reaches the
+        # ConfigMap and never reaches a running pod.
+        checksum/config: 6df76a73ac25e0e68a3985bee6454e84495f721f976a6168cf89c322e95ba848
     spec:
       serviceAccountName: ifrcgo-cacheppuccino
       terminationGracePeriodSeconds: 45

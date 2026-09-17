@@ -211,6 +211,11 @@ spec:
       labels:
         app.kubernetes.io/name: cacheppuccino-helm
         app.kubernetes.io/instance: release-name
+      annotations:
+        # Roll the pods when configuration changes. envFrom is read once at
+        # container start, so without this a values change reaches the
+        # ConfigMap and never reaches a running pod.
+        checksum/config: b2b7a05675895c5a85f6d378e3e87808685099d79abfb4c880e9cc18fb5b69e7
     spec:
       serviceAccountName: release-name-cacheppuccino-helm
       terminationGracePeriodSeconds: 45
