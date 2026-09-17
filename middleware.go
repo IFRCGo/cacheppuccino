@@ -9,12 +9,15 @@ import (
 	"time"
 )
 
-// probePaths are polled by the kubelet every few seconds on every pod. At
-// info level they would be the overwhelming majority of the log volume and
-// would drown the lines worth reading.
-var probePaths = map[string]struct{}{
-	"/healthz": {},
-	"/readyz":  {},
+// pollPaths are hit every few seconds on every pod -- by the kubelet for the
+// probes, and by every sibling for the peer survey. At info level they would
+// be the overwhelming majority of the log volume and would drown the lines
+// worth reading. Snapshot transfers are not listed: they happen only when
+// content actually changed, and they are worth a line.
+var pollPaths = map[string]struct{}{
+	"/healthz":       {},
+	"/readyz":        {},
+	internalPeerPath: {},
 }
 
 type statusWriter struct {
@@ -65,7 +68,7 @@ func withRequestLogging(next http.Handler, logger *slog.Logger) http.Handler {
 		next.ServeHTTP(sw, r)
 
 		level := slog.LevelInfo
-		if _, isProbe := probePaths[r.URL.Path]; isProbe {
+		if _, isPoll := pollPaths[r.URL.Path]; isPoll {
 			level = slog.LevelDebug
 		}
 

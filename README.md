@@ -250,7 +250,7 @@ Defaults for every one of these are set in `helm/values.yaml`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ALARM_NO_PRIMARY` | `5m` | Nobody holds the lease |
-| `ALARM_SNAPSHOT_AGE` | `4 × PULL_INTERVAL` | Newest snapshot is too old |
+| `ALARM_SNAPSHOT_AGE` | `4 × PULL_INTERVAL` | No pod has pulled successfully in this long |
 | `ALARM_DIVERGENCE` | `2m` | Replicas hold different snapshots |
 | `ALARM_PEER_UNREADY` | `2m` | A pod is unready or unreachable |
 | `ALARM_PULL_FAILURES` | `3` | Consecutive failed pulls |
