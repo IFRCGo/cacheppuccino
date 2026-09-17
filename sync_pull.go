@@ -130,11 +130,9 @@ func (s *Syncer) pullLoop(ctx context.Context) {
 		}
 		s.state.beat(s.now())
 
-		if s.elector.IsPrimary() {
-			pullCtx, cancel := s.withDeadline(ctx, s.cfg.InitialPullDeadline)
-			s.pullAll(pullCtx, "initial")
-			cancel()
-		}
+		pullCtx, cancel := s.withDeadline(ctx, s.cfg.InitialPullDeadline)
+		s.pullAll(pullCtx, "initial")
+		cancel()
 		if s.registry.Servable() {
 			break
 		}
@@ -158,16 +156,22 @@ func (s *Syncer) pullLoop(ctx context.Context) {
 			if jitterMax > 0 && !sleepCtx(ctx, jitter(s.now(), jitterMax)) {
 				return
 			}
-			if s.elector.IsPrimary() {
-				s.pullAll(ctx, "periodic")
-			}
+			s.pullAll(ctx, "periodic")
 		}
 	}
 }
 
 // pullAll pulls every application concurrently, bounded by PULL_CONCURRENCY.
 // One application's failure never blocks or fails another's.
+//
+// Only the primary talks to upstream; followers take their data from peers.
+// The check lives here rather than at the call sites so no future caller can
+// bypass it.
 func (s *Syncer) pullAll(ctx context.Context, kind string) {
+	if !s.elector.IsPrimary() {
+		return
+	}
+
 	sem := make(chan struct{}, s.cfg.PullConcurrency)
 	var wg sync.WaitGroup
 

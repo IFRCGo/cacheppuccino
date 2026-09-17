@@ -65,7 +65,10 @@ func run(cfg Config, logger *slog.Logger) error {
 	state := NewState(cfg.AppIDs(), time.Now())
 	cache := NewCache(cfg.CacheDir, cfg.MaxCacheAge)
 
-	elector := Elector(alwaysPrimary{identity: cfg.PodName})
+	elector, electionRunner, err := newElector(cfg, logger)
+	if err != nil {
+		return err
+	}
 
 	syncer := NewSyncer(cfg, registry, cache, state, elector, logger)
 
@@ -131,6 +134,9 @@ func run(cfg Config, logger *slog.Logger) error {
 		}
 	}()
 
+	if electionRunner != nil {
+		go electionRunner(ctx)
+	}
 	syncer.Run(ctx)
 
 	select {
@@ -152,6 +158,22 @@ func run(cfg Config, logger *slog.Logger) error {
 		logger.Error("internal shutdown failed", slog.String("err", err.Error()))
 	}
 	return nil
+}
+
+// newElector returns the elector and, when election is active, the loop that
+// maintains it. A single container has nobody to coordinate with, so it is
+// unconditionally primary.
+func newElector(cfg Config, logger *slog.Logger) (Elector, func(context.Context), error) {
+	if cfg.LeaderElection != electionLease {
+		return alwaysPrimary{identity: cfg.PodName}, nil, nil
+	}
+
+	client, err := NewLeaseClient(cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("leader election: %w", err)
+	}
+	e := NewLeaseElector(client, cfg, logger)
+	return e, e.Run, nil
 }
 
 func writeOpenAPISpecFile(path string) error {

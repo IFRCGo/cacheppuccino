@@ -16,6 +16,7 @@ type testNode struct {
 	syncer   *Syncer
 	server   *Server
 	peers    *PeerClient
+	elector  Elector
 	src      *stubSource
 	internal *httptest.Server
 	addr     string
@@ -92,6 +93,7 @@ func newFleetNode(t *testing.T, i int) *testNode {
 
 	return &testNode{
 		cfg:      cfg,
+		elector:  elector,
 		registry: registry,
 		state:    state,
 		syncer:   syncer,
@@ -250,5 +252,123 @@ func TestSurveyReportsUnreachablePeers(t *testing.T) {
 	// silently shrink the fleet size.
 	if len(unreachable) != 1 || unreachable[0] != nodes[1].addr {
 		t.Errorf("unreachable = %v, want [%s]", unreachable, nodes[1].addr)
+	}
+}
+
+// electedFleet is newFleet with real Lease-based election against one shared
+// fake API server, so exactly one node is primary at a time.
+func newElectedFleet(t *testing.T, n int) ([]*testNode, *fakeAPIServer, *httptest.Server) {
+	t.Helper()
+
+	api := &fakeAPIServer{}
+	apiSrv := httptest.NewServer(api.handler())
+	t.Cleanup(apiSrv.Close)
+
+	nodes := newFleet(t, n)
+	for _, node := range nodes {
+		e := NewLeaseElector(newTestLeaseClient(t, apiSrv), node.cfg, discardLogger())
+		node.elector = e
+		node.syncer.elector = e
+		node.server.elector = e
+	}
+	return nodes, api, apiSrv
+}
+
+// Only the primary may talk to upstream; followers take their data from
+// peers. A fleet where every pod pulled would multiply load on the
+// translation API by the replica count.
+func TestOnlyPrimaryPullsUpstream(t *testing.T) {
+	ctx := context.Background()
+	nodes, _, _ := newElectedFleet(t, 3)
+
+	for _, n := range nodes {
+		n.src.body = seedXLSX(t)
+		n.elector.(*LeaseElector).step(ctx)
+	}
+
+	primaries := 0
+	for _, n := range nodes {
+		if n.elector.IsPrimary() {
+			primaries++
+		}
+	}
+	if primaries != 1 {
+		t.Fatalf("primaries = %d, want 1", primaries)
+	}
+
+	for _, n := range nodes {
+		n.syncer.pullAll(ctx, "test")
+	}
+
+	for _, n := range nodes {
+		calls := n.src.Calls()
+		if n.elector.IsPrimary() && calls != 1 {
+			t.Errorf("primary %s made %d upstream calls, want 1", n.cfg.PodName, calls)
+		}
+		if !n.elector.IsPrimary() && calls != 0 {
+			t.Errorf("follower %s made %d upstream calls, want 0", n.cfg.PodName, calls)
+		}
+	}
+}
+
+// When the primary stops renewing, another node must take over and start
+// pulling, while every node keeps serving throughout.
+func TestFleetPromotesNewPrimaryAfterFailure(t *testing.T) {
+	ctx := context.Background()
+	nodes, _, _ := newElectedFleet(t, 3)
+	base := time.Now()
+
+	for _, n := range nodes {
+		n.src.body = seedXLSX(t)
+		e := n.elector.(*LeaseElector)
+		e.now = func() time.Time { return base }
+		e.step(ctx)
+	}
+
+	var old *testNode
+	for _, n := range nodes {
+		if n.elector.IsPrimary() {
+			old = n
+		}
+	}
+	if old == nil {
+		t.Fatalf("no primary elected")
+	}
+	old.syncer.pullAll(ctx, "test")
+
+	// Everyone has data, so nothing about the handover affects serving.
+	for _, n := range nodes[1:] {
+		n.syncer.syncAppFromPeers(ctx, defaultAppID, 0)
+	}
+
+	// The primary stops renewing; the others try again past the lease TTL.
+	after := base.Add(2 * old.cfg.LeaseDuration)
+	for _, n := range nodes {
+		if n == old {
+			continue
+		}
+		e := n.elector.(*LeaseElector)
+		e.now = func() time.Time { return after }
+		e.step(ctx)
+	}
+
+	promoted := 0
+	for _, n := range nodes {
+		if n == old {
+			continue
+		}
+		if n.elector.IsPrimary() {
+			promoted++
+			n.syncer.pullAll(ctx, "test")
+			if n.src.Calls() == 0 {
+				t.Errorf("promoted node %s did not pull upstream", n.cfg.PodName)
+			}
+		}
+		if !n.registry.Servable() {
+			t.Errorf("%s stopped being servable during a handover", n.cfg.PodName)
+		}
+	}
+	if promoted != 1 {
+		t.Errorf("promoted = %d, want exactly 1 successor", promoted)
 	}
 }
