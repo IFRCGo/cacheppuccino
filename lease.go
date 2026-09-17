@@ -10,12 +10,19 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"sync"
 	"time"
 )
+
+// leaseTimeLayout is metav1.RFC3339Micro. acquireTime and renewTime are
+// metav1.MicroTime, whose UnmarshalJSON parses with this exact layout and
+// accepts exactly six fractional digits, so time.RFC3339Nano (which trims
+// trailing zeros and keeps nine) is rejected by the API server.
+const leaseTimeLayout = "2006-01-02T15:04:05.000000Z07:00"
 
 // Paths and env the kubelet projects into every pod.
 const (
@@ -25,8 +32,10 @@ const (
 )
 
 // leaseSpec mirrors coordination.k8s.io/v1 LeaseSpec. Only the fields this
-// service needs are modelled; unknown fields survive a round trip because
-// the whole object is decoded, mutated, and sent back.
+// service needs are modelled, and a renewal is a full PUT, so anything the
+// API server holds outside these fields -- labels, annotations,
+// ownerReferences, spec fields added by later API versions -- is dropped on
+// the next renewal.
 type leaseSpec struct {
 	HolderIdentity       *string `json:"holderIdentity,omitempty"`
 	LeaseDurationSeconds *int32  `json:"leaseDurationSeconds,omitempty"`
@@ -36,11 +45,10 @@ type leaseSpec struct {
 }
 
 type leaseObject struct {
-	APIVersion string         `json:"apiVersion,omitempty"`
-	Kind       string         `json:"kind,omitempty"`
-	Metadata   leaseMeta      `json:"metadata"`
-	Spec       leaseSpec      `json:"spec"`
-	Extra      map[string]any `json:"-"`
+	APIVersion string    `json:"apiVersion,omitempty"`
+	Kind       string    `json:"kind,omitempty"`
+	Metadata   leaseMeta `json:"metadata"`
+	Spec       leaseSpec `json:"spec"`
 }
 
 type leaseMeta struct {
@@ -166,18 +174,21 @@ func (c *LeaseClient) Get(ctx context.Context) (leaseObject, bool, error) {
 }
 
 // TryAcquire takes or renews the lease for identity, reporting whether this
-// pod now holds it.
+// pod now holds it and who does. The holder comes from the read this call
+// already performs, so a follower learns it without a second round trip.
 //
 // The write carries the resourceVersion read a moment earlier, so the API
 // server rejects it with 409 if another pod got there first. Two pods racing
 // cannot both win.
-func (c *LeaseClient) TryAcquire(ctx context.Context, identity string, ttl time.Duration, now time.Time) (bool, error) {
-	stamp := now.UTC().Format(time.RFC3339Nano)
-	secs := int32(ttl.Seconds())
+func (c *LeaseClient) TryAcquire(ctx context.Context, identity string, ttl time.Duration, now time.Time) (acquired bool, holder string, err error) {
+	stamp := now.UTC().Format(leaseTimeLayout)
+	// Rounded up: advertising less than this pod actually waits would let a
+	// peer take over while this one still believes it holds the lease.
+	secs := int32(math.Ceil(ttl.Seconds()))
 
 	cur, exists, err := c.Get(ctx)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 
 	if !exists {
@@ -195,18 +206,22 @@ func (c *LeaseClient) TryAcquire(ctx context.Context, identity string, ttl time.
 		}
 		code, err := c.do(ctx, http.MethodPost, c.collectionPath(), l, nil)
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 		if code == http.StatusConflict {
-			// Another pod created it in the same instant.
-			return false, nil
+			// Another pod created it in the same instant; the next tick
+			// reads who won.
+			return false, "", nil
 		}
-		return isHTTPSuccess(code), nil
+		if !isHTTPSuccess(code) {
+			return false, "", nil
+		}
+		return true, identity, nil
 	}
 
 	held := cur.Spec.HolderIdentity != nil && *cur.Spec.HolderIdentity == identity
 	if !held && !leaseExpired(cur, now) {
-		return false, nil
+		return false, derefString(cur.Spec.HolderIdentity), nil
 	}
 
 	if !held {
@@ -219,12 +234,15 @@ func (c *LeaseClient) TryAcquire(ctx context.Context, identity string, ttl time.
 
 	code, err := c.do(ctx, http.MethodPut, c.objectPath(), cur, nil)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if code == http.StatusConflict {
-		return false, errLeaseConflict
+		return false, "", errLeaseConflict
 	}
-	return isHTTPSuccess(code), nil
+	if !isHTTPSuccess(code) {
+		return false, "", nil
+	}
+	return true, identity, nil
 }
 
 // Release hands the lease back so a successor does not have to wait out the
@@ -239,7 +257,7 @@ func (c *LeaseClient) Release(ctx context.Context, identity string) error {
 	}
 
 	cur.Spec.HolderIdentity = ptrString("")
-	cur.Spec.RenewTime = ptrString(time.Unix(0, 0).UTC().Format(time.RFC3339Nano))
+	cur.Spec.RenewTime = ptrString(time.Unix(0, 0).UTC().Format(leaseTimeLayout))
 
 	_, err = c.do(ctx, http.MethodPut, c.objectPath(), cur, nil)
 	return err
@@ -308,7 +326,8 @@ func (e *LeaseElector) Primary() string {
 }
 
 // Health reports the last error and when contact with the API server last
-// succeeded, for /monitor. Nothing here gates serving.
+// succeeded. The no_primary alarm quotes the error so /monitor says why
+// nothing holds the lease. Nothing here gates serving.
 func (e *LeaseElector) Health() (lastSuccess time.Time, lastErr string) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -335,20 +354,13 @@ func (e *LeaseElector) Run(ctx context.Context) {
 func (e *LeaseElector) step(ctx context.Context) {
 	now := e.now()
 
-	acquired, err := e.client.TryAcquire(ctx, e.identity, e.ttl, now)
+	// The holder comes back from the same read TryAcquire performs. Asking
+	// again would double this pod's API-server traffic, and a failure of
+	// that second read used to be swallowed as a successful contact.
+	acquired, holder, err := e.client.TryAcquire(ctx, e.identity, e.ttl, now)
 	if err != nil && !errors.Is(err, errLeaseConflict) {
 		e.recordFailure(now, err)
 		return
-	}
-
-	holder := e.identity
-	if !acquired {
-		// Not ours: report who does hold it, so /cluster can show it.
-		if l, ok, getErr := e.client.Get(ctx); getErr == nil && ok && l.Spec.HolderIdentity != nil {
-			holder = *l.Spec.HolderIdentity
-		} else {
-			holder = ""
-		}
 	}
 
 	e.mu.Lock()
@@ -359,15 +371,16 @@ func (e *LeaseElector) step(ctx context.Context) {
 	e.lastErr = ""
 }
 
-// recordFailure steps down once the lease this pod holds could have expired.
-// Continuing to act as primary while unable to renew is how two pods end up
-// pulling at once.
+// recordFailure steps down one renew interval before the lease this pod
+// holds can expire. A peer treats the lease as free at ttl, so stepping down
+// at ttl leaves a window in which both pods believe they are primary and
+// both pull from upstream.
 func (e *LeaseElector) recordFailure(now time.Time, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	e.lastErr = err.Error()
-	if e.primary && now.Sub(e.lastSuccess) > e.ttl {
+	if e.primary && now.Sub(e.lastSuccess) > e.ttl-e.renew {
 		e.logger.Warn("lease: stepping down, cannot renew",
 			slog.String("err", e.lastErr),
 			slog.Duration("since_last_success", now.Sub(e.lastSuccess)),
@@ -392,6 +405,13 @@ func (e *LeaseElector) releaseOnShutdown() {
 }
 
 func ptrInt32(v int32) *int32 { return &v }
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
 
 func deref(p *int32) int32 {
 	if p == nil {

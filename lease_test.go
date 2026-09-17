@@ -86,6 +86,16 @@ func (f *fakeAPIServer) holder() string {
 	return *f.lease.Spec.HolderIdentity
 }
 
+// stamps returns the stored acquireTime and renewTime as written.
+func (f *fakeAPIServer) stamps() (acquire, renew *string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lease == nil {
+		return nil, nil
+	}
+	return f.lease.Spec.AcquireTime, f.lease.Spec.RenewTime
+}
+
 func (f *fakeAPIServer) transitions() int32 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -120,7 +130,7 @@ func TestLeaseAcquireCreatesWhenAbsent(t *testing.T) {
 
 	c := newTestLeaseClient(t, srv)
 
-	ok, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, time.Now())
+	ok, _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, time.Now())
 	if err != nil {
 		t.Fatalf("TryAcquire: %v", err)
 	}
@@ -140,10 +150,10 @@ func TestLeaseRenewKeepsHolderAndTransitions(t *testing.T) {
 	c := newTestLeaseClient(t, srv)
 	now := time.Now()
 
-	if _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, now); err != nil {
+	if _, _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, now); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
-	ok, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, now.Add(5*time.Second))
+	ok, _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, now.Add(5*time.Second))
 	if err != nil {
 		t.Fatalf("renew: %v", err)
 	}
@@ -164,12 +174,12 @@ func TestLeaseDoesNotStealFromLiveHolder(t *testing.T) {
 	c := newTestLeaseClient(t, srv)
 	now := time.Now()
 
-	if _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, now); err != nil {
+	if _, _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, now); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
 	// Well inside the lease duration: pod-b must back off.
-	ok, err := c.TryAcquire(context.Background(), "pod-b", 15*time.Second, now.Add(5*time.Second))
+	ok, _, err := c.TryAcquire(context.Background(), "pod-b", 15*time.Second, now.Add(5*time.Second))
 	if err != nil {
 		t.Fatalf("TryAcquire: %v", err)
 	}
@@ -189,12 +199,12 @@ func TestLeaseTakesOverAfterHolderStopsRenewing(t *testing.T) {
 	c := newTestLeaseClient(t, srv)
 	now := time.Now()
 
-	if _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, now); err != nil {
+	if _, _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, now); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
 	// Past the lease duration, which is what a dead primary looks like.
-	ok, err := c.TryAcquire(context.Background(), "pod-b", 15*time.Second, now.Add(20*time.Second))
+	ok, _, err := c.TryAcquire(context.Background(), "pod-b", 15*time.Second, now.Add(20*time.Second))
 	if err != nil {
 		t.Fatalf("TryAcquire: %v", err)
 	}
@@ -219,7 +229,7 @@ func TestLeaseStaleResourceVersionConflicts(t *testing.T) {
 	c := newTestLeaseClient(t, srv)
 	now := time.Now()
 
-	if _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, now); err != nil {
+	if _, _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, now); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
@@ -227,7 +237,7 @@ func TestLeaseStaleResourceVersionConflicts(t *testing.T) {
 	api.conflict = true
 	api.mu.Unlock()
 
-	ok, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, now.Add(time.Second))
+	ok, _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, now.Add(time.Second))
 	if ok {
 		t.Errorf("reported success despite a conflict")
 	}
@@ -242,7 +252,7 @@ func TestLeaseReleaseClearsHolder(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestLeaseClient(t, srv)
-	if _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, time.Now()); err != nil {
+	if _, _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, time.Now()); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
@@ -255,7 +265,7 @@ func TestLeaseReleaseClearsHolder(t *testing.T) {
 
 	// A released lease is immediately available, so failover does not have
 	// to wait out the full duration.
-	ok, err := c.TryAcquire(context.Background(), "pod-b", 15*time.Second, time.Now())
+	ok, _, err := c.TryAcquire(context.Background(), "pod-b", 15*time.Second, time.Now())
 	if err != nil || !ok {
 		t.Errorf("successor could not take a released lease: ok=%v err=%v", ok, err)
 	}
@@ -267,7 +277,7 @@ func TestLeaseReleaseIgnoresLeaseHeldByAnother(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestLeaseClient(t, srv)
-	if _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, time.Now()); err != nil {
+	if _, _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, time.Now()); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
@@ -285,6 +295,8 @@ func TestLeaseConcurrentAcquireElectsOne(t *testing.T) {
 	srv := httptest.NewServer(api.handler())
 	defer srv.Close()
 
+	sharedTokenPath(t)
+
 	now := time.Now()
 	var (
 		mu      sync.Mutex
@@ -297,7 +309,7 @@ func TestLeaseConcurrentAcquireElectsOne(t *testing.T) {
 			defer wg.Done()
 			c := newTestLeaseClientShared(t, srv)
 			identity := "pod-" + strconv.Itoa(n)
-			ok, err := c.TryAcquire(context.Background(), identity, 15*time.Second, now)
+			ok, _, err := c.TryAcquire(context.Background(), identity, 15*time.Second, now)
 			if err != nil && !errors.Is(err, errLeaseConflict) {
 				return
 			}
@@ -333,19 +345,28 @@ func newTestLeaseClientShared(t *testing.T, srv *httptest.Server) *LeaseClient {
 var (
 	sharedTokenOnce sync.Once
 	sharedToken     string
+	sharedTokenDir  string
+	sharedTokenErr  error
 )
 
+// sharedTokenPath writes the projected-token file the client re-reads per
+// request. The once body reports through sharedTokenErr rather than t.Fatalf:
+// it can run on a goroutine spawned by a test (TestLeaseConcurrentAcquire...),
+// and FailNow from there would leave the once marked done with an empty path,
+// failing every caller with an unrelated symptom.
 func sharedTokenPath(t *testing.T) string {
+	t.Helper()
 	sharedTokenOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "lease-token")
-		if err != nil {
-			t.Fatalf("MkdirTemp: %v", err)
+		sharedTokenDir, sharedTokenErr = os.MkdirTemp("", "lease-token")
+		if sharedTokenErr != nil {
+			return
 		}
-		sharedToken = filepath.Join(dir, "token")
-		if err := os.WriteFile(sharedToken, []byte("test-token"), 0o600); err != nil {
-			t.Fatalf("write token: %v", err)
-		}
+		sharedToken = filepath.Join(sharedTokenDir, "token")
+		sharedTokenErr = os.WriteFile(sharedToken, []byte("test-token"), 0o600)
 	})
+	if sharedTokenErr != nil {
+		t.Fatalf("shared token: %v", sharedTokenErr)
+	}
 	return sharedToken
 }
 
@@ -439,5 +460,40 @@ func TestLeaseClientRequiresInClusterEnv(t *testing.T) {
 		t.Fatalf("NewLeaseClient succeeded outside a cluster")
 	} else if !strings.Contains(err.Error(), "not running in a cluster") {
 		t.Errorf("err = %v, want an out-of-cluster explanation", err)
+	}
+}
+
+// The Lease API types acquireTime and renewTime as metav1.MicroTime, whose
+// UnmarshalJSON parses with this exact layout and accepts exactly six
+// fractional digits. time.RFC3339Nano keeps nine and trims trailing zeros, so
+// a stamp written with it is rejected by the API server and no pod ever
+// becomes primary. The fake API server cannot catch this -- it decodes into
+// the client's own *string fields -- so assert the format directly.
+func TestLeaseTimestampsUseMicroTimeLayout(t *testing.T) {
+	const microTime = "2006-01-02T15:04:05.000000Z07:00"
+
+	api := &fakeAPIServer{}
+	srv := httptest.NewServer(api.handler())
+	defer srv.Close()
+	c := newTestLeaseClient(t, srv)
+
+	// A nanosecond-resolution instant with no trailing zeros is the case
+	// RFC3339Nano gets wrong.
+	now := time.Date(2026, 9, 17, 11, 14, 52, 592061579, time.UTC)
+	if _, _, err := c.TryAcquire(context.Background(), "pod-a", 15*time.Second, now); err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+
+	acquire, renew := api.stamps()
+	for name, got := range map[string]*string{
+		"acquireTime": acquire,
+		"renewTime":   renew,
+	} {
+		if got == nil {
+			t.Fatalf("%s is nil", name)
+		}
+		if _, err := time.Parse(microTime, *got); err != nil {
+			t.Errorf("%s = %q, not parseable as metav1.MicroTime: %v", name, *got, err)
+		}
 	}
 }
