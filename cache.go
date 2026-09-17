@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,12 @@ import (
 type Cache struct {
 	dir    string
 	maxAge time.Duration
+
+	// mu serializes Save. The pull loop and the peer loop both adopt
+	// snapshots, and the pair of renames is only atomic per file: two
+	// concurrent saves can otherwise leave one snapshot's XLSX beside the
+	// other's metadata, which Load then rejects on the hash check.
+	mu sync.Mutex
 }
 
 // cacheMeta accompanies each XLSX. The hash is verified against the file's
@@ -77,6 +84,9 @@ func (c *Cache) Save(appID string, xlsx []byte, meta cacheMeta) error {
 	if c == nil {
 		return nil
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if err := os.MkdirAll(c.dir, 0o750); err != nil {
 		return err
 	}

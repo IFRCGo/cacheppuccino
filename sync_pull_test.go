@@ -150,15 +150,18 @@ func TestPullAppFirstThenSkipThenReplace(t *testing.T) {
 func TestPullAppFailuresKeepServingPreviousData(t *testing.T) {
 	ctx := context.Background()
 
+	// Parses cleanly and yields no rows: the errEmptyImport path, which is
+	// not the same as an unreadable body. Built here rather than inside the
+	// closure, which runs on a subtest's goroutine.
+	headerOnly := translationsXLSX(t, [][]string{{"page", "key", "en"}})
+
 	tests := []struct {
 		name   string
 		break_ func(*stubSource)
 	}{
 		{"upstream error", func(s *stubSource) { s.err = errors.New("502 bad gateway") }},
 		{"unparseable body", func(s *stubSource) { s.body = []byte("not an xlsx") }},
-		{"empty import", func(s *stubSource) {
-			s.body = nil
-		}},
+		{"empty import", func(s *stubSource) { s.body = headerOnly }},
 	}
 
 	for _, tc := range tests {
@@ -173,11 +176,7 @@ func TestPullAppFailuresKeepServingPreviousData(t *testing.T) {
 				t.Fatalf("no snapshot after seed pull")
 			}
 
-			if tc.name == "empty import" {
-				src.body = translationsXLSX(t, [][]string{{"page", "key", "en"}})
-			} else {
-				tc.break_(src)
-			}
+			tc.break_(src)
 			syncer.pullApp(ctx, defaultAppID, "test")
 
 			if holder.Load() != good {

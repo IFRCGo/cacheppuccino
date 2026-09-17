@@ -16,6 +16,12 @@ type Elector interface {
 	Identity() string
 }
 
+// electorHealth is implemented by electors that talk to something that can
+// fail. The no_primary alarm quotes the error when the elector has one.
+type electorHealth interface {
+	Health() (lastSuccess time.Time, lastErr string)
+}
+
 // alwaysPrimary is the elector used when leader election is off: a single
 // container has nobody to coordinate with.
 type alwaysPrimary struct{ identity string }
@@ -26,8 +32,10 @@ func (a alwaysPrimary) Identity() string { return a.identity }
 
 // Hydrator supplies a snapshot from somewhere other than upstream. Peer
 // hydration implements it; a nil Hydrator means upstream is the only source.
+// current is what this pod already holds, so an implementation can decline
+// before paying for a transfer.
 type Hydrator interface {
-	Hydrate(ctx context.Context, appID string) (*Snapshot, []byte, bool)
+	Hydrate(ctx context.Context, appID string, current *Snapshot) (*Snapshot, []byte, bool)
 }
 
 // Syncer owns every path by which snapshots enter this process: the local
@@ -46,6 +54,8 @@ type Syncer struct {
 	// now is a seam: the sync loops are timing-driven and tests must not
 	// depend on wall-clock time.
 	now func() time.Time
+
+	wg sync.WaitGroup
 }
 
 func NewSyncer(cfg Config, registry *Registry, cache *Cache, state *State, elector Elector, logger *slog.Logger) *Syncer {
@@ -77,9 +87,8 @@ func (s *Syncer) SourceName(appID string) string {
 	return ""
 }
 
-// LoadFromCache seeds snapshots from local disk before the server starts
-// accepting traffic, so a restarted container serves immediately instead of
-// waiting on a peer or on upstream.
+// LoadFromCache seeds snapshots from local disk, so a restarted container
+// serves immediately instead of waiting on a peer or on upstream.
 func (s *Syncer) LoadFromCache() {
 	now := s.now()
 	for _, id := range s.registry.IDs() {
@@ -111,20 +120,35 @@ func (s *Syncer) LoadFromCache() {
 // the peer loop runs everywhere, including on the primary, so a primary that
 // has just taken over can still hydrate from a peer that is ahead of it.
 func (s *Syncer) Run(ctx context.Context) {
-	go s.pullLoop(ctx)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.pullLoop(ctx)
+	}()
 	if s.hydrator != nil {
-		go s.peerLoop(ctx)
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.peerLoop(ctx)
+		}()
 	}
 }
 
-// pullLoop performs the initial hydration with a short backoff, then settles
-// into the configured interval. The backoff matters: without it a pod that
-// loses a transient upstream blip at startup stays unready for a whole pull
-// interval, which stalls rollouts.
+// Wait blocks until the loops started by Run have returned, so a caller can
+// shut down without killing a pull mid-write.
+func (s *Syncer) Wait() { s.wg.Wait() }
+
+// pullLoop pulls once at startup and then settles into the configured
+// interval, retrying with a short backoff until the pod holds servable data.
+// The startup pull runs even when the local cache already seeded a snapshot,
+// so a restart does not serve cached content for a whole pull interval before
+// checking upstream. The backoff matters: without it a pod that loses a
+// transient upstream blip at startup stays unready for a whole pull interval,
+// which stalls rollouts.
 func (s *Syncer) pullLoop(ctx context.Context) {
 	backoff := s.cfg.InitialPullBackoffMin
 
-	for !s.registry.Servable() {
+	for {
 		if ctx.Err() != nil {
 			return
 		}
@@ -237,15 +261,7 @@ func (s *Syncer) pullApp(ctx context.Context, appID, kind string) {
 
 	h.Store(snap)
 	st.recordSuccess(s.now())
-
-	if err := s.cache.Save(appID, xlsx, cacheMeta{
-		Hash:       hash,
-		ImportedAt: snap.ImportedAt,
-		RowCount:   snap.RowCount,
-	}); err != nil {
-		// A failed cache write costs a slow restart, not correctness.
-		logger.Warn("cache: write failed", slog.String("err", err.Error()))
-	}
+	s.saveToCache(appID, xlsx, snap)
 
 	logger.Info(kind+" pull imported", slog.Int("rows", snap.RowCount), slog.String("hash", hash))
 }
@@ -292,27 +308,33 @@ func (s *Syncer) peerLoop(ctx context.Context) {
 
 	adoptJitter := min(s.cfg.PeerPollInterval/2, 2*time.Second)
 
+	// One pass before the first tick. A cold pod prefers a warm sibling over
+	// upstream, and the pull loop starts its upstream attempt immediately,
+	// so waiting out a poll interval here would invert that order.
+	s.pollPeers(ctx, adoptJitter)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			s.state.beat(s.now())
-			for _, id := range s.registry.IDs() {
-				s.syncAppFromPeers(ctx, id, adoptJitter)
-			}
+			s.pollPeers(ctx, adoptJitter)
 		}
 	}
 }
 
-func (s *Syncer) syncAppFromPeers(ctx context.Context, appID string, adoptJitter time.Duration) {
-	snap, xlsx, ok := s.hydrator.Hydrate(ctx, appID)
-	if !ok {
-		return
+func (s *Syncer) pollPeers(ctx context.Context, adoptJitter time.Duration) {
+	for _, id := range s.registry.IDs() {
+		s.syncAppFromPeers(ctx, id, adoptJitter)
 	}
+}
 
+func (s *Syncer) syncAppFromPeers(ctx context.Context, appID string, adoptJitter time.Duration) {
 	h, _ := s.registry.Holder(appID)
-	if cur := h.Load(); cur != nil && (snap.Hash == cur.Hash || snap.Version() <= cur.Version()) {
+
+	snap, xlsx, ok := s.hydrator.Hydrate(ctx, appID, h.Load())
+	if !ok {
 		return
 	}
 	if !sleepCtx(ctx, jitter(s.now(), adoptJitter)) {
@@ -322,19 +344,26 @@ func (s *Syncer) syncAppFromPeers(ctx context.Context, appID string, adoptJitter
 		return
 	}
 
-	if err := s.cache.Save(appID, xlsx, cacheMeta{
-		Hash:       snap.Hash,
-		ImportedAt: snap.ImportedAt,
-		RowCount:   snap.RowCount,
-	}); err != nil {
-		s.logger.Warn("cache: write failed", slog.String("app", appID), slog.String("err", err.Error()))
-	}
+	s.saveToCache(appID, xlsx, snap)
 
 	s.logger.Info("peer sync adopted",
 		slog.String("app", appID),
 		slog.String("hash", snap.Hash),
 		slog.Int("rows", snap.RowCount),
 	)
+}
+
+// saveToCache persists the bytes a snapshot was built from. A failed write
+// costs a slow restart, not correctness.
+func (s *Syncer) saveToCache(appID string, xlsx []byte, snap *Snapshot) {
+	err := s.cache.Save(appID, xlsx, cacheMeta{
+		Hash:       snap.Hash,
+		ImportedAt: snap.ImportedAt,
+		RowCount:   snap.RowCount,
+	})
+	if err != nil {
+		s.logger.Warn("cache: write failed", slog.String("app", appID), slog.String("err", err.Error()))
+	}
 }
 
 // logPullFailure escalates to error once the failures are sustained, so an

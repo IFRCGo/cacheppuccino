@@ -88,8 +88,7 @@ func NewSnapshot(appID, hash string, importedAt time.Time, rows []StringRow, raw
 			kv = make(map[string]string, 32)
 			byLang[lang] = kv
 		}
-		// Last one wins for duplicate (page, key, lang) rows in one XLSX,
-		// matching the import's ON CONFLICT semantics.
+		// Last one wins for duplicate (page, key, lang) rows in one XLSX.
 		kv[r.Key] = r.Value
 	}
 

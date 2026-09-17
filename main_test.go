@@ -1,6 +1,19 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
+
+// TestMain removes the token directory sharedTokenPath creates. It is shared
+// across tests, so no single test can own its cleanup.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if sharedTokenDir != "" {
+		_ = os.RemoveAll(sharedTokenDir)
+	}
+	os.Exit(code)
+}
 
 func TestHealthcheckURL(t *testing.T) {
 	tests := []struct {

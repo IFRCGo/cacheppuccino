@@ -119,7 +119,10 @@ func LoadConfig() (Config, error) {
 		InternalListenAddr: envOr("INTERNAL_LISTEN_ADDR", ":8081"),
 		LogLevel:           envOr("LOG_LEVEL", "info"),
 
-		CacheDir:    envOr("CACHE_DIR", "/cache"),
+		// Unset means the default path; explicitly empty disables the
+		// on-disk cache, which is what the chart sets when cache.enabled
+		// is false and the volume is absent.
+		CacheDir:    envOrDefaultUnset("CACHE_DIR", "/cache"),
 		MaxCacheAge: envDuration("MAX_CACHE_AGE", 24*time.Hour),
 
 		PeerService:      os.Getenv("PEER_SERVICE"),
@@ -209,8 +212,21 @@ func LoadConfig() (Config, error) {
 	if cfg.PeerPollInterval <= 0 {
 		errs = append(errs, fmt.Errorf("PEER_POLL_INTERVAL must be positive, got %s", cfg.PeerPollInterval))
 	}
+	// A non-positive peer timeout makes every discovery context expire on
+	// creation, which silently disables peer hydration entirely.
+	if cfg.PeerTimeout <= 0 {
+		errs = append(errs, fmt.Errorf("PEER_TIMEOUT must be positive, got %s", cfg.PeerTimeout))
+	}
+	if cfg.ClusterCacheTTL < 0 {
+		errs = append(errs, fmt.Errorf("CLUSTER_CACHE_TTL must not be negative, got %s", cfg.ClusterCacheTTL))
+	}
 	if cfg.MaxCacheAge < 0 {
 		errs = append(errs, fmt.Errorf("MAX_CACHE_AGE must not be negative, got %s", cfg.MaxCacheAge))
+	}
+	// Zero would make the alarm fire on a fleet with no failures at all,
+	// since the condition is "failures >= threshold".
+	if cfg.AlarmPullFailures <= 0 {
+		errs = append(errs, fmt.Errorf("ALARM_PULL_FAILURES must be positive, got %d", cfg.AlarmPullFailures))
 	}
 
 	switch cfg.LeaderElection {
@@ -220,6 +236,11 @@ func LoadConfig() (Config, error) {
 		if cfg.LeaseRenewInterval <= 0 || cfg.LeaseDuration <= cfg.LeaseRenewInterval {
 			errs = append(errs, fmt.Errorf("LEASE_DURATION must exceed LEASE_RENEW_INTERVAL, got %s and %s",
 				cfg.LeaseDuration, cfg.LeaseRenewInterval))
+		}
+		// The Lease API carries the duration in whole seconds, so anything
+		// below a second cannot be expressed to the peers that read it.
+		if cfg.LeaseDuration < time.Second {
+			errs = append(errs, fmt.Errorf("LEASE_DURATION must be at least 1s, got %s", cfg.LeaseDuration))
 		}
 	case electionOff:
 	default:
@@ -242,6 +263,16 @@ func (c Config) AppIDs() []string {
 		ids = append(ids, a.ID)
 	}
 	return ids
+}
+
+// envOrDefaultUnset distinguishes an unset variable from one explicitly set
+// to the empty string, so a config key can have both a default and an
+// "off" value.
+func envOrDefaultUnset(k, def string) string {
+	if v, ok := os.LookupEnv(k); ok {
+		return v
+	}
+	return def
 }
 
 func envOr(k, def string) string {

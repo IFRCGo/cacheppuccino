@@ -72,8 +72,8 @@ type MonitorResponse struct {
 	AllAlarms  []Alarm `json:"all_alarms"`
 }
 
-// AppStatus is one application's view from a single pod. /cluster reuses it
-// verbatim, so a pod reports the same shape about itself either way.
+// AppStatus is one application's view from a single pod, for /status.
+// /cluster reports the fleet through PeerInfo instead.
 type AppStatus struct {
 	App           string `json:"app"`
 	Source        string `json:"source"`
@@ -108,8 +108,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /monitor", s.handleMonitor)
 	mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 
-	// Recovery wraps logging, not the other way round: a panicking request
-	// must still emit its request log line.
+	// Logging wraps recovery, so a panicking request still emits its request
+	// log line with the 500 the recovery handler wrote.
 	h := withRecovery(mux, s.logger)
 	h = withRequestLogging(h, s.logger)
 

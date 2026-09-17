@@ -1,13 +1,14 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
-// allConfigEnvVars is every env var LoadConfig reads. Each test sets all of
-// them explicitly ("" simulates unset) to shield tests from the host env.
+// allConfigEnvVars is every env var LoadConfig reads. Each test takes control
+// of all of them so the host environment cannot change a result.
 var allConfigEnvVars = []string{
 	"TRANSLATION_SOURCE",
 	"TRANSLATION_BASE_URL",
@@ -15,19 +16,50 @@ var allConfigEnvVars = []string{
 	"TRANSLATION_API_KEY",
 	"TRANSLATION_XLSX_URL",
 	"LISTEN_ADDR",
-	"CACHE_DIR",
-	"HTTP_TIMEOUT",
-	"PULL_INTERVAL",
-	"INITIAL_PULL_DEADLINE",
+	"INTERNAL_LISTEN_ADDR",
 	"LOG_LEVEL",
+	"CACHE_DIR",
+	"MAX_CACHE_AGE",
+	"PEER_SERVICE",
+	"PEER_POLL_INTERVAL",
+	"PEER_TIMEOUT",
+	"LEADER_ELECTION",
+	"LEASE_NAME",
+	"LEASE_DURATION",
+	"LEASE_RENEW_INTERVAL",
+	"PULL_INTERVAL",
+	"PULL_CONCURRENCY",
+	"HTTP_TIMEOUT",
+	"INITIAL_PULL_DEADLINE",
+	"INITIAL_PULL_BACKOFF_MIN",
+	"INITIAL_PULL_BACKOFF_MAX",
+	"ALARM_NO_PRIMARY",
+	"ALARM_SNAPSHOT_AGE",
+	"ALARM_DIVERGENCE",
+	"ALARM_PEER_UNREADY",
+	"ALARM_PULL_FAILURES",
+	"CLUSTER_CACHE_TTL",
+	"POD_NAME",
+	"POD_NAMESPACE",
+	"POD_IP",
 }
 
-// setConfigEnv sets every config env var, using values from overrides and
-// "" for anything not listed there.
+// setConfigEnv applies overrides and unsets every other config var. Unset is
+// not the same as empty -- CACHE_DIR reads an explicit "" as "no cache" --
+// so anything absent from overrides is removed rather than blanked.
 func setConfigEnv(t *testing.T, overrides map[string]string) {
 	t.Helper()
 	for _, k := range allConfigEnvVars {
-		t.Setenv(k, overrides[k])
+		if v, ok := overrides[k]; ok {
+			t.Setenv(k, v)
+			continue
+		}
+		// Setenv registers the cleanup that restores the original value;
+		// Unsetenv then gives this test a genuinely absent variable.
+		t.Setenv(k, "")
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatalf("Unsetenv(%s): %v", k, err)
+		}
 	}
 }
 

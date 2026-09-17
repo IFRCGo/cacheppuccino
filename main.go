@@ -80,10 +80,6 @@ func run(cfg Config, logger *slog.Logger) error {
 		syncer.SetHydrator(peers)
 	}
 
-	// Seed from local disk before serving: a restarted container should
-	// answer immediately rather than wait on a peer or on upstream.
-	syncer.LoadFromCache()
-
 	srv := NewServer(cfg, registry, state, syncer, elector, logger)
 	srv.peers = peers
 
@@ -91,51 +87,49 @@ func run(cfg Config, logger *slog.Logger) error {
 		slog.String("version", version),
 		slog.String("pod", cfg.PodName),
 		slog.String("addr", cfg.ListenAddr),
-		slog.Bool("has_data", registry.Servable()),
 		slog.String("election", cfg.LeaderElection),
 		slog.String("pull_interval", cfg.PullInterval.String()),
 		slog.String("cache_dir", cfg.CacheDir),
 		slog.String("peer_service", cfg.PeerService),
 	)
 
-	// No BaseContext: request contexts must outlive the shutdown signal
-	// so Shutdown can drain in-flight requests instead of aborting them.
-	httpServer := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           srv.routes(),
-		ReadTimeout:       10 * time.Second,
-		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
+	// The public listener carries client traffic. The internal one carries
+	// pod-to-pod traffic only and is never added to the Service or the
+	// ingress.
+	httpServer := newHTTPServer(cfg.ListenAddr, srv.routes())
+	httpServer.ReadTimeout = 10 * time.Second
+	httpServer.WriteTimeout = 15 * time.Second
+	internalServer := newHTTPServer(cfg.InternalListenAddr, srv.internalRoutes())
+
+	// Ordered: the public listener drains first on shutdown, so client
+	// traffic stops before peers lose the endpoints they hydrate from.
+	servers := []namedServer{
+		{name: "public", server: httpServer},
+		{name: "internal", server: internalServer},
+	}
+	serveErr := make(chan error, len(servers))
+	for _, s := range servers {
+		go func() {
+			logger.Info("http server starting", slog.String("listener", s.name), slog.String("addr", s.server.Addr))
+			if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serveErr <- fmt.Errorf("%s listener: %w", s.name, err)
+			}
+		}()
 	}
 
-	// The internal listener carries pod-to-pod traffic only. It is never
-	// added to the Service or the ingress.
-	internalServer := &http.Server{
-		Addr:              cfg.InternalListenAddr,
-		Handler:           srv.internalRoutes(),
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
-	}
+	// Seeding from disk after the listeners bind keeps probes answerable
+	// while the cached export is parsed; /readyz reports not-ready until it
+	// lands either way.
+	syncer.LoadFromCache()
 
-	serveErr := make(chan error, 2)
-	go func() {
-		logger.Info("http server starting", slog.String("addr", cfg.ListenAddr))
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serveErr <- err
-		}
-	}()
-	go func() {
-		logger.Info("internal server starting", slog.String("addr", cfg.InternalListenAddr))
-		if err := internalServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serveErr <- err
-		}
-	}()
-
-	if electionRunner != nil {
-		go electionRunner(ctx)
+	electionDone := make(chan struct{})
+	if electionRunner == nil {
+		close(electionDone)
+	} else {
+		go func() {
+			defer close(electionDone)
+			electionRunner(ctx)
+		}()
 	}
 	syncer.Run(ctx)
 
@@ -149,15 +143,48 @@ func run(cfg Config, logger *slog.Logger) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error("http shutdown failed", slog.String("err", err.Error()))
-	} else {
-		logger.Info("http server stopped")
+	for _, s := range servers {
+		if err := s.server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("http shutdown failed", slog.String("listener", s.name), slog.String("err", err.Error()))
+		}
 	}
-	if err := internalServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error("internal shutdown failed", slog.String("err", err.Error()))
+	logger.Info("http servers stopped")
+
+	// The background loops outlive the listeners: the elector still has to
+	// hand the lease back, and a pull may be mid-write to the cache. Without
+	// this the process exits first and a successor waits out the full lease
+	// duration.
+	loopsDone := make(chan struct{})
+	go func() {
+		defer close(loopsDone)
+		<-electionDone
+		syncer.Wait()
+	}()
+	select {
+	case <-loopsDone:
+	case <-shutdownCtx.Done():
+		logger.Warn("background loops did not stop within the shutdown budget")
 	}
 	return nil
+}
+
+// namedServer pairs a listener with the name its log lines carry.
+type namedServer struct {
+	name   string
+	server *http.Server
+}
+
+// newHTTPServer builds a listener with the timeouts both servers share.
+func newHTTPServer(addr string, h http.Handler) *http.Server {
+	// No BaseContext: request contexts must outlive the shutdown signal so
+	// Shutdown can drain in-flight requests instead of aborting them.
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 }
 
 // newElector returns the elector and, when election is active, the loop that
