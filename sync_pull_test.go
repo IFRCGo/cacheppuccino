@@ -6,19 +6,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
 func testAPISource(baseURL, apiKey string) *APISource {
-	return NewAPISource(Config{
-		TranslationBaseURL:       baseURL,
-		TranslationApplicationID: "app-1",
-		TranslationAPIKey:        apiKey,
-		HTTPTimeout:              5 * time.Second,
-	})
+	return NewAPISource(AppConfig{
+		BaseURL:       baseURL,
+		ApplicationID: "app-1",
+		APIKey:        apiKey,
+	}, 5*time.Second)
 }
 
 // seedXLSX has 3 data rows x 2 languages = 6 imported StringRows.
@@ -97,299 +95,188 @@ func TestAPISourceDownloadXLSXRequestShape(t *testing.T) {
 	}
 }
 
-func TestPullOnceFirstThenSkipThenReplace(t *testing.T) {
+func TestPullAppFirstThenSkipThenReplace(t *testing.T) {
 	ctx := context.Background()
-	db := openTestDB(t)
-	logger := discardLogger()
+	src := &stubSource{body: seedXLSX(t)}
+	syncer, registry := newTestSyncer(t, src)
+	holder, _ := registry.Holder(defaultAppID)
 
-	payload1 := seedXLSX(t)
-	// v2: "home"/"farewell" removed, "contact"/"email" added.
-	payload2 := translationsXLSX(t, [][]string{
+	syncer.pullApp(ctx, defaultAppID, "test")
+
+	first := holder.Load()
+	if first == nil {
+		t.Fatalf("no snapshot after first pull")
+	}
+	if first.RowCount != 6 {
+		t.Errorf("rows = %d, want 6", first.RowCount)
+	}
+	if got, _ := first.Get([]string{"home", "about"}, "en"); !reflect.DeepEqual(toPlain(got), seedWantEN()) {
+		t.Errorf("en strings = %v, want %v", toPlain(got), seedWantEN())
+	}
+
+	// Identical bytes must not rebuild the snapshot: the pointer staying put
+	// is what lets clients keep their cached ETag.
+	syncer.pullApp(ctx, defaultAppID, "test")
+	if holder.Load() != first {
+		t.Errorf("unchanged upstream replaced the snapshot")
+	}
+
+	// A removed row must disappear: upstream is the whole truth, not a delta.
+	src.body = translationsXLSX(t, [][]string{
 		{"page", "key", "en", "fr"},
-		{"home", "greeting", "Hello", "Bonjour"},
-		{"about", "title", "About us", "A propos"},
-		{"contact", "email", "Email", "Courriel"},
+		{"home", "greeting", "Hi", "Salut"},
 	})
+	syncer.pullApp(ctx, defaultAppID, "test")
 
-	var mu sync.Mutex
-	payload := payload1
-	setPayload := func(p []byte) {
-		mu.Lock()
-		payload = p
-		mu.Unlock()
+	second := holder.Load()
+	if second == first {
+		t.Fatalf("changed upstream did not replace the snapshot")
 	}
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		p := payload
-		mu.Unlock()
-		_, _ = w.Write(p)
-	}))
-	defer srv.Close()
-
-	client := testAPISource(srv.URL, "secret")
-
-	// First pull: full import.
-	res1, err := PullOnce(ctx, db, client, logger)
-	if err != nil {
-		t.Fatalf("first PullOnce: %v", err)
+	if second.RowCount != 2 {
+		t.Errorf("rows = %d, want 2", second.RowCount)
 	}
-	if res1.Unchanged {
-		t.Error("first pull: Unchanged = true, want false")
+	got, _ := second.Get([]string{"home", "about"}, "en")
+	if got["home"]["greeting"] != "Hi" {
+		t.Errorf("home.greeting = %q, want %q", got["home"]["greeting"], "Hi")
 	}
-	if res1.Rows != 6 {
-		t.Errorf("first pull: Rows = %d, want 6", res1.Rows)
+	if _, present := got["home"]["farewell"]; present {
+		t.Errorf("home.farewell survived an import that dropped it")
 	}
-	if want := HashBytes(payload1); res1.Hash != want {
-		t.Errorf("first pull: Hash = %q, want %q", res1.Hash, want)
-	}
-
-	gotEN, _, err := db.GetStringsByPagesLang(ctx, []string{"home", "about"}, "en")
-	if err != nil {
-		t.Fatalf("GetStringsByPagesLang(en): %v", err)
-	}
-	if want := seedWantEN(); !reflect.DeepEqual(gotEN, want) {
-		t.Errorf("en strings after first pull = %v, want %v", gotEN, want)
-	}
-	gotFR, _, err := db.GetStringsByPagesLang(ctx, []string{"home"}, "fr")
-	if err != nil {
-		t.Fatalf("GetStringsByPagesLang(fr): %v", err)
-	}
-	wantFR := map[string]map[string]string{
-		"home": {"greeting": "Bonjour", "farewell": "Au revoir"},
-	}
-	if !reflect.DeepEqual(gotFR, wantFR) {
-		t.Errorf("fr strings after first pull = %v, want %v", gotFR, wantFR)
-	}
-
-	hashMeta, ok, err := db.GetMeta(ctx, metaKeyLastXLSXHash)
-	if err != nil {
-		t.Fatalf("GetMeta(%s): %v", metaKeyLastXLSXHash, err)
-	}
-	if !ok || hashMeta != res1.Hash {
-		t.Errorf("meta %s = %q (ok=%v), want %q", metaKeyLastXLSXHash, hashMeta, ok, res1.Hash)
-	}
-	pullMeta, ok, err := db.GetMeta(ctx, metaKeyLastPull)
-	if err != nil {
-		t.Fatalf("GetMeta(%s): %v", metaKeyLastPull, err)
-	}
-	if !ok {
-		t.Fatalf("meta %s not set after first pull", metaKeyLastPull)
-	}
-	if _, err := time.Parse(time.RFC3339, pullMeta); err != nil {
-		t.Errorf("meta %s = %q is not RFC3339: %v", metaKeyLastPull, pullMeta, err)
-	}
-
-	// Second pull with identical bytes: skipped, but last pull refreshed.
-	const stale = "2000-01-01T00:00:00Z"
-	if err := db.SetMeta(ctx, metaKeyLastPull, stale); err != nil {
-		t.Fatalf("SetMeta: %v", err)
-	}
-
-	res2, err := PullOnce(ctx, db, client, logger)
-	if err != nil {
-		t.Fatalf("second PullOnce: %v", err)
-	}
-	if !res2.Unchanged {
-		t.Error("second pull: Unchanged = false, want true")
-	}
-	if res2.Rows != 0 {
-		t.Errorf("second pull: Rows = %d, want 0", res2.Rows)
-	}
-	if res2.Hash != res1.Hash {
-		t.Errorf("second pull: Hash = %q, want %q", res2.Hash, res1.Hash)
-	}
-
-	pullMeta2, ok, err := db.GetMeta(ctx, metaKeyLastPull)
-	if err != nil {
-		t.Fatalf("GetMeta(%s): %v", metaKeyLastPull, err)
-	}
-	if !ok {
-		t.Fatalf("meta %s missing after skipped pull", metaKeyLastPull)
-	}
-	if pullMeta2 == stale {
-		t.Errorf("meta %s = %q, want refreshed even on skipped pull", metaKeyLastPull, pullMeta2)
-	}
-	ts, err := time.Parse(time.RFC3339, pullMeta2)
-	if err != nil {
-		t.Fatalf("meta %s = %q is not RFC3339: %v", metaKeyLastPull, pullMeta2, err)
-	}
-	if !ts.After(time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)) {
-		t.Errorf("meta %s = %q, want a recent timestamp", metaKeyLastPull, pullMeta2)
-	}
-
-	// Third pull with changed payload: full replacement, removed row gone.
-	setPayload(payload2)
-
-	res3, err := PullOnce(ctx, db, client, logger)
-	if err != nil {
-		t.Fatalf("third PullOnce: %v", err)
-	}
-	if res3.Unchanged {
-		t.Error("third pull: Unchanged = true, want false")
-	}
-	if res3.Rows != 6 {
-		t.Errorf("third pull: Rows = %d, want 6", res3.Rows)
-	}
-	if want := HashBytes(payload2); res3.Hash != want {
-		t.Errorf("third pull: Hash = %q, want %q", res3.Hash, want)
-	}
-	if res3.Hash == res1.Hash {
-		t.Error("third pull: hash unchanged despite different payload")
-	}
-
-	gotEN3, _, err := db.GetStringsByPagesLang(ctx, []string{"home", "about", "contact"}, "en")
-	if err != nil {
-		t.Fatalf("GetStringsByPagesLang(en): %v", err)
-	}
-	wantEN3 := map[string]map[string]string{
-		"home":    {"greeting": "Hello"},
-		"about":   {"title": "About us"},
-		"contact": {"email": "Email"},
-	}
-	if !reflect.DeepEqual(gotEN3, wantEN3) {
-		t.Errorf("en strings after third pull = %v, want %v (removed row must be gone)", gotEN3, wantEN3)
-	}
-
-	hashMeta3, ok, err := db.GetMeta(ctx, metaKeyLastXLSXHash)
-	if err != nil {
-		t.Fatalf("GetMeta(%s): %v", metaKeyLastXLSXHash, err)
-	}
-	if !ok || hashMeta3 != res3.Hash {
-		t.Errorf("meta %s = %q (ok=%v), want %q", metaKeyLastXLSXHash, hashMeta3, ok, res3.Hash)
+	if len(got["about"]) != 0 {
+		t.Errorf("about = %v, want empty after the page was dropped", got["about"])
 	}
 }
 
-func TestPullOnceUpstreamHTTPError(t *testing.T) {
+func TestPullAppFailuresKeepServingPreviousData(t *testing.T) {
 	ctx := context.Background()
-	db := openTestDB(t)
-	logger := discardLogger()
-	payload := seedXLSX(t)
 
-	var mu sync.Mutex
-	fail := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		f := fail
-		mu.Unlock()
-		if f {
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte("upstream exploded"))
-			return
-		}
-		_, _ = w.Write(payload)
-	}))
-	defer srv.Close()
-
-	client := testAPISource(srv.URL, "secret")
-
-	res, err := PullOnce(ctx, db, client, logger)
-	if err != nil {
-		t.Fatalf("seed PullOnce: %v", err)
+	tests := []struct {
+		name   string
+		break_ func(*stubSource)
+	}{
+		{"upstream error", func(s *stubSource) { s.err = errors.New("502 bad gateway") }},
+		{"unparseable body", func(s *stubSource) { s.body = []byte("not an xlsx") }},
+		{"empty import", func(s *stubSource) {
+			s.body = nil
+		}},
 	}
 
-	mu.Lock()
-	fail = true
-	mu.Unlock()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &stubSource{body: seedXLSX(t)}
+			syncer, registry := newTestSyncer(t, src)
+			holder, _ := registry.Holder(defaultAppID)
 
-	_, err = PullOnce(ctx, db, client, logger)
-	if err == nil {
-		t.Fatal("PullOnce on upstream 500: want error, got nil")
-	}
-	if !strings.Contains(err.Error(), "500") {
-		t.Errorf("error = %q, want it to mention status 500", err)
-	}
+			syncer.pullApp(ctx, defaultAppID, "test")
+			good := holder.Load()
+			if good == nil {
+				t.Fatalf("no snapshot after seed pull")
+			}
 
-	hashMeta, ok, err := db.GetMeta(ctx, metaKeyLastXLSXHash)
-	if err != nil {
-		t.Fatalf("GetMeta(%s): %v", metaKeyLastXLSXHash, err)
-	}
-	if !ok || hashMeta != res.Hash {
-		t.Errorf("meta %s = %q (ok=%v), want unchanged %q", metaKeyLastXLSXHash, hashMeta, ok, res.Hash)
-	}
-	gotEN, _, err := db.GetStringsByPagesLang(ctx, []string{"home", "about"}, "en")
-	if err != nil {
-		t.Fatalf("GetStringsByPagesLang: %v", err)
-	}
-	if want := seedWantEN(); !reflect.DeepEqual(gotEN, want) {
-		t.Errorf("en strings after failed pull = %v, want unchanged %v", gotEN, want)
+			if tc.name == "empty import" {
+				src.body = translationsXLSX(t, [][]string{{"page", "key", "en"}})
+			} else {
+				tc.break_(src)
+			}
+			syncer.pullApp(ctx, defaultAppID, "test")
+
+			if holder.Load() != good {
+				t.Errorf("a failed pull replaced servable data")
+			}
+			_, lastErr, failures := syncer.state.App(defaultAppID).snapshot()
+			if lastErr == "" {
+				t.Errorf("last_pull_error is empty after a failed pull")
+			}
+			if failures != 1 {
+				t.Errorf("consecutive_failures = %d, want 1", failures)
+			}
+		})
 	}
 }
 
-func TestPullOnceInvalidXLSXBody(t *testing.T) {
+func TestPullAppRecordsSuccessAfterFailure(t *testing.T) {
 	ctx := context.Background()
-	db := openTestDB(t)
-	logger := discardLogger()
-	payload := seedXLSX(t)
+	src := &stubSource{err: errors.New("down")}
+	syncer, _ := newTestSyncer(t, src)
 
-	var mu sync.Mutex
-	junk := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		j := junk
-		mu.Unlock()
-		if j {
-			_, _ = w.Write([]byte("definitely not a zip archive"))
-			return
-		}
-		_, _ = w.Write(payload)
-	}))
-	defer srv.Close()
-
-	client := testAPISource(srv.URL, "secret")
-
-	res, err := PullOnce(ctx, db, client, logger)
-	if err != nil {
-		t.Fatalf("seed PullOnce: %v", err)
+	syncer.pullApp(ctx, defaultAppID, "test")
+	if _, lastErr, _ := syncer.state.App(defaultAppID).snapshot(); lastErr == "" {
+		t.Fatalf("no error recorded for a failed pull")
 	}
 
-	mu.Lock()
-	junk = true
-	mu.Unlock()
+	src.err = nil
+	src.body = seedXLSX(t)
+	syncer.pullApp(ctx, defaultAppID, "test")
 
-	_, err = PullOnce(ctx, db, client, logger)
-	if err == nil {
-		t.Fatal("PullOnce on junk body: want parse error, got nil")
+	lastPull, lastErr, failures := syncer.state.App(defaultAppID).snapshot()
+	if lastErr != "" {
+		t.Errorf("last_pull_error = %q, want cleared after success", lastErr)
 	}
-	if strings.Contains(err.Error(), "download failed") {
-		t.Errorf("error = %q, want a parse error, not a download error", err)
+	if failures != 0 {
+		t.Errorf("consecutive_failures = %d, want 0", failures)
 	}
-
-	hashMeta, ok, err := db.GetMeta(ctx, metaKeyLastXLSXHash)
-	if err != nil {
-		t.Fatalf("GetMeta(%s): %v", metaKeyLastXLSXHash, err)
-	}
-	if !ok || hashMeta != res.Hash {
-		t.Errorf("meta %s = %q (ok=%v), want unchanged %q", metaKeyLastXLSXHash, hashMeta, ok, res.Hash)
-	}
-	gotEN, _, err := db.GetStringsByPagesLang(ctx, []string{"home", "about"}, "en")
-	if err != nil {
-		t.Fatalf("GetStringsByPagesLang: %v", err)
-	}
-	if want := seedWantEN(); !reflect.DeepEqual(gotEN, want) {
-		t.Errorf("en strings after failed pull = %v, want unchanged %v", gotEN, want)
+	if lastPull.IsZero() {
+		t.Errorf("last_pull is zero after success")
 	}
 }
 
-func TestPullOnceContextCancelled(t *testing.T) {
-	db := openTestDB(t)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(50 * time.Millisecond)
-		_, _ = w.Write([]byte("never used"))
-	}))
-	defer srv.Close()
-
-	client := testAPISource(srv.URL, "secret")
-
+func TestPullAppContextCancelledIsNotAFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := PullOnce(ctx, db, client, discardLogger())
-	if err == nil {
-		t.Fatal("PullOnce with cancelled context: want error, got nil")
+	src := &stubSource{err: context.Canceled}
+	syncer, _ := newTestSyncer(t, src)
+
+	syncer.pullApp(ctx, defaultAppID, "test")
+
+	if _, lastErr, failures := syncer.state.App(defaultAppID).snapshot(); lastErr != "" || failures != 0 {
+		t.Errorf("shutdown recorded as a pull failure: err=%q failures=%d", lastErr, failures)
 	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("error = %v, want errors.Is(err, context.Canceled)", err)
+}
+
+func TestPullAppWritesCacheAndLoadFromCacheRestoresIt(t *testing.T) {
+	ctx := context.Background()
+	src := &stubSource{body: seedXLSX(t)}
+	syncer, registry := newTestSyncer(t, src)
+
+	syncer.pullApp(ctx, defaultAppID, "test")
+	holder, _ := registry.Holder(defaultAppID)
+	want := holder.Load()
+
+	// A fresh process over the same cache dir must serve without upstream.
+	restored := NewRegistry(syncer.cfg.AppIDs())
+	restart := NewSyncer(syncer.cfg, restored, syncer.cache, NewState(syncer.cfg.AppIDs(), time.Now()),
+		alwaysPrimary{identity: "test-pod"}, discardLogger())
+	restart.LoadFromCache()
+
+	got, _ := restored.Holder(defaultAppID)
+	if got.Load() == nil {
+		t.Fatalf("cache did not restore a snapshot")
+	}
+	if got.Load().Hash != want.Hash {
+		t.Errorf("restored hash = %q, want %q", got.Load().Hash, want.Hash)
+	}
+	if got.Load().RowCount != want.RowCount {
+		t.Errorf("restored rows = %d, want %d", got.Load().RowCount, want.RowCount)
+	}
+}
+
+func TestLoadFromCacheRejectsExpiredEntry(t *testing.T) {
+	src := &stubSource{body: seedXLSX(t)}
+	syncer, _ := newTestSyncer(t, src)
+	syncer.pullApp(context.Background(), defaultAppID, "test")
+
+	// Beyond MAX_CACHE_AGE a restarted pod must hydrate afresh rather than
+	// quietly serve content the rest of the fleet has moved past.
+	syncer.cache.maxAge = time.Nanosecond
+
+	restored := NewRegistry(syncer.cfg.AppIDs())
+	restart := NewSyncer(syncer.cfg, restored, syncer.cache, NewState(syncer.cfg.AppIDs(), time.Now()),
+		alwaysPrimary{identity: "test-pod"}, discardLogger())
+	restart.LoadFromCache()
+
+	h, _ := restored.Holder(defaultAppID)
+	if h.Load() != nil {
+		t.Errorf("expired cache entry was loaded")
 	}
 }

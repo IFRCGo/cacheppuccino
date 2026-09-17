@@ -3,9 +3,12 @@ FROM golang:1.23 AS build
 
 ARG VERSION=dev
 
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
 ENV CGO_ENABLED=0 \
-    GOOS=linux \
-    GOARCH=amd64
+    GOOS=${TARGETOS} \
+    GOARCH=${TARGETARCH}
 
 WORKDIR /src
 
@@ -26,9 +29,13 @@ FROM gcr.io/distroless/static-debian12
 WORKDIR /
 COPY --from=build /out/cacheppuccino /cacheppuccino
 
-VOLUME ["/data"]
+# The snapshot cache lives on an emptyDir in Kubernetes and on an anonymous
+# volume here; it only has to survive container restarts within a pod.
+VOLUME ["/cache"]
 
-ENV LISTEN_ADDR=":8080"
-EXPOSE 8080
+ENV LISTEN_ADDR=":8080" \
+    INTERNAL_LISTEN_ADDR=":8081" \
+    CACHE_DIR="/cache"
+EXPOSE 8080 8081
 
 ENTRYPOINT ["/cacheppuccino"]

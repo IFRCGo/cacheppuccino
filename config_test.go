@@ -15,7 +15,7 @@ var allConfigEnvVars = []string{
 	"TRANSLATION_API_KEY",
 	"TRANSLATION_XLSX_URL",
 	"LISTEN_ADDR",
-	"SQLITE_PATH",
+	"CACHE_DIR",
 	"HTTP_TIMEOUT",
 	"PULL_INTERVAL",
 	"INITIAL_PULL_DEADLINE",
@@ -48,20 +48,32 @@ func TestLoadConfigDefaults(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v, want nil", err)
 	}
 
-	if got, want := cfg.TranslationBaseURL, "https://translate.example.com"; got != want {
-		t.Errorf("TranslationBaseURL = %q, want %q", got, want)
+	app := onlyApp(t, cfg)
+	if got, want := app.BaseURL, "https://translate.example.com"; got != want {
+		t.Errorf("app.BaseURL = %q, want %q", got, want)
 	}
-	if got, want := cfg.TranslationApplicationID, "app-id"; got != want {
-		t.Errorf("TranslationApplicationID = %q, want %q", got, want)
+	if got, want := app.ApplicationID, "app-id"; got != want {
+		t.Errorf("app.ApplicationID = %q, want %q", got, want)
 	}
-	if got, want := cfg.TranslationAPIKey, "api-key"; got != want {
-		t.Errorf("TranslationAPIKey = %q, want %q", got, want)
+	if got, want := app.APIKey, "api-key"; got != want {
+		t.Errorf("app.APIKey = %q, want %q", got, want)
 	}
 	if got, want := cfg.ListenAddr, ":8080"; got != want {
 		t.Errorf("ListenAddr = %q, want %q", got, want)
 	}
-	if got, want := cfg.SQLitePath, "/data/cacheppuccino.db"; got != want {
-		t.Errorf("SQLitePath = %q, want %q", got, want)
+	if got, want := cfg.CacheDir, "/cache"; got != want {
+		t.Errorf("CacheDir = %q, want %q", got, want)
+	}
+	if got, want := cfg.InternalListenAddr, ":8081"; got != want {
+		t.Errorf("InternalListenAddr = %q, want %q", got, want)
+	}
+	if got, want := cfg.LeaderElection, electionOff; got != want {
+		t.Errorf("LeaderElection = %q, want %q", got, want)
+	}
+	// Zero ALARM_SNAPSHOT_AGE derives from the pull interval rather than
+	// silently staying at a threshold that ignores it.
+	if got, want := cfg.AlarmSnapshotAge, 40*time.Minute; got != want {
+		t.Errorf("AlarmSnapshotAge = %v, want %v", got, want)
 	}
 	if got, want := cfg.HTTPTimeout, 30*time.Second; got != want {
 		t.Errorf("HTTPTimeout = %v, want %v", got, want)
@@ -75,8 +87,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if got, want := cfg.LogLevel, "info"; got != want {
 		t.Errorf("LogLevel = %q, want %q", got, want)
 	}
-	if got, want := cfg.TranslationSource, "api"; got != want {
-		t.Errorf("TranslationSource = %q, want %q", got, want)
+	if got, want := app.Source, "api"; got != want {
+		t.Errorf("app.Source = %q, want %q", got, want)
 	}
 }
 
@@ -149,11 +161,12 @@ func TestLoadConfigSourceMatrix(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LoadConfig() error = %v, want nil", err)
 			}
-			if cfg.TranslationSource != tt.env["TRANSLATION_SOURCE"] {
-				t.Errorf("TranslationSource = %q, want %q", cfg.TranslationSource, tt.env["TRANSLATION_SOURCE"])
+			app := onlyApp(t, cfg)
+			if app.Source != tt.env["TRANSLATION_SOURCE"] {
+				t.Errorf("app.Source = %q, want %q", app.Source, tt.env["TRANSLATION_SOURCE"])
 			}
-			if cfg.TranslationXLSXURL != tt.env["TRANSLATION_XLSX_URL"] {
-				t.Errorf("TranslationXLSXURL = %q, want %q", cfg.TranslationXLSXURL, tt.env["TRANSLATION_XLSX_URL"])
+			if app.XLSXURL != tt.env["TRANSLATION_XLSX_URL"] {
+				t.Errorf("app.XLSXURL = %q, want %q", app.XLSXURL, tt.env["TRANSLATION_XLSX_URL"])
 			}
 		})
 	}
@@ -308,7 +321,7 @@ func TestLoadConfigZeroInitialPullDeadline(t *testing.T) {
 func TestLoadConfigValidOverrides(t *testing.T) {
 	env := requiredAPIEnv()
 	env["LISTEN_ADDR"] = "127.0.0.1:9999"
-	env["SQLITE_PATH"] = "/tmp/other.db"
+	env["CACHE_DIR"] = "/tmp/other-cache"
 	env["HTTP_TIMEOUT"] = "5s"
 	env["PULL_INTERVAL"] = "1h30m"
 	env["INITIAL_PULL_DEADLINE"] = "250ms"
@@ -323,8 +336,8 @@ func TestLoadConfigValidOverrides(t *testing.T) {
 	if got, want := cfg.ListenAddr, "127.0.0.1:9999"; got != want {
 		t.Errorf("ListenAddr = %q, want %q", got, want)
 	}
-	if got, want := cfg.SQLitePath, "/tmp/other.db"; got != want {
-		t.Errorf("SQLitePath = %q, want %q", got, want)
+	if got, want := cfg.CacheDir, "/tmp/other-cache"; got != want {
+		t.Errorf("CacheDir = %q, want %q", got, want)
 	}
 	if got, want := cfg.HTTPTimeout, 5*time.Second; got != want {
 		t.Errorf("HTTPTimeout = %v, want %v", got, want)
@@ -356,4 +369,15 @@ func TestLoadConfigValidLogLevels(t *testing.T) {
 			}
 		})
 	}
+}
+
+// onlyApp returns the single configured application, failing if the config
+// somehow carries a different number.
+func onlyApp(t *testing.T, cfg Config) AppConfig {
+	t.Helper()
+
+	if len(cfg.Apps) != 1 {
+		t.Fatalf("len(cfg.Apps) = %d, want 1", len(cfg.Apps))
+	}
+	return cfg.Apps[0]
 }

@@ -13,25 +13,28 @@ services:
       TRANSLATION_APPLICATION_ID: ${TRANSLATION_APPLICATION_ID:-}
       TRANSLATION_API_KEY: ${TRANSLATION_API_KEY:-}
       TRANSLATION_XLSX_URL: ${TRANSLATION_XLSX_URL:-}
-      SQLITE_PATH: "/data/cacheppuccino.db"
-      SQLITE_TMP_DIR: "/data/tmp"
+      CACHE_DIR: "/cache"
+      # A single container has nobody to coordinate with, so it is always
+      # the primary.
+      LEADER_ELECTION: "off"
       PULL_INTERVAL: ${PULL_INTERVAL:-10m}
       HTTP_TIMEOUT: ${HTTP_TIMEOUT:-30s}
       INITIAL_PULL_DEADLINE: ${INITIAL_PULL_DEADLINE:-45s}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LISTEN_ADDR: ${LISTEN_ADDR:-:8080}
     volumes:
-      - cacheppuccino_data:/data
+      - cacheppuccino_cache:/cache
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "/cacheppuccino", "--healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
     develop:
       watch:
         - path: .
           action: rebuild
 
 volumes:
-  cacheppuccino_data:
+  cacheppuccino_cache:

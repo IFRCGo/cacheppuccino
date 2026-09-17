@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -50,43 +51,38 @@ func main() {
 		os.Exit(0)
 	}
 
-	db, err := OpenDB(cfg.SQLitePath)
-	if err != nil {
-		logger.Error("db open failed", slog.String("err", err.Error()))
+	if err := run(cfg, logger); err != nil {
+		logger.Error("fatal", slog.String("err", err.Error()))
 		os.Exit(1)
 	}
-	defer func() { _ = db.Close() }()
+}
 
-	var source XLSXSource
-	if cfg.TranslationSource == sourceURL {
-		source = NewURLSource(cfg)
-	} else {
-		source = NewAPISource(cfg)
-	}
-
+func run(cfg Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Ready = can serve: data from a previous run counts, even if the
-	// upstream is currently unreachable. A pull success also sets it.
-	ready := &ReadyState{}
-	hasData, err := db.HasStrings(ctx)
-	if err != nil {
-		logger.Error("readiness check failed", slog.String("err", err.Error()))
-		os.Exit(1)
-	}
-	ready.SetReady(hasData)
+	registry := NewRegistry(cfg.AppIDs())
+	state := NewState(cfg.AppIDs(), time.Now())
+	cache := NewCache(cfg.CacheDir, cfg.MaxCacheAge)
 
-	srv := &Server{db: db, ready: ready, logger: logger, sourceName: source.Name()}
+	elector := Elector(alwaysPrimary{identity: cfg.PodName})
+
+	syncer := NewSyncer(cfg, registry, cache, state, elector, logger)
+
+	// Seed from local disk before serving: a restarted container should
+	// answer immediately rather than wait on a peer or on upstream.
+	syncer.LoadFromCache()
+
+	srv := NewServer(cfg, registry, state, syncer, elector, logger)
 
 	logger.Info("cacheppuccino starting",
 		slog.String("version", version),
+		slog.String("pod", cfg.PodName),
 		slog.String("addr", cfg.ListenAddr),
-		slog.String("source", source.Name()),
-		slog.Bool("has_data", hasData),
+		slog.Bool("has_data", registry.Servable()),
+		slog.String("election", cfg.LeaderElection),
 		slog.String("pull_interval", cfg.PullInterval.String()),
-		slog.String("http_timeout", cfg.HTTPTimeout.String()),
-		slog.String("initial_pull_deadline", cfg.InitialPullDeadline.String()),
+		slog.String("cache_dir", cfg.CacheDir),
 	)
 
 	// No BaseContext: request contexts must outlive the shutdown signal
@@ -101,26 +97,21 @@ func main() {
 		MaxHeaderBytes:    1 << 20,
 	}
 
+	serveErr := make(chan error, 1)
 	go func() {
 		logger.Info("http server starting", slog.String("addr", cfg.ListenAddr))
-		err := httpServer.ListenAndServe()
-		if err != nil && err != http.ErrServerClosed {
-			logger.Error("http server failed", slog.String("err", err.Error()))
-			stop()
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
 		}
 	}()
 
-	StartPeriodicPuller(
-		ctx,
-		db,
-		source,
-		cfg.PullInterval,
-		cfg.InitialPullDeadline,
-		ready,
-		logger,
-	)
+	syncer.Run(ctx)
 
-	<-ctx.Done()
+	select {
+	case err := <-serveErr:
+		return fmt.Errorf("http server failed: %w", err)
+	case <-ctx.Done():
+	}
 	logger.Info("shutdown signal received")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -131,6 +122,7 @@ func main() {
 	} else {
 		logger.Info("http server stopped")
 	}
+	return nil
 }
 
 func writeOpenAPISpecFile(path string) error {

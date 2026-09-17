@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -26,35 +25,22 @@ type responseEnvelope struct {
 }
 
 type stringsData struct {
+	App     string                       `json:"app"`
 	Lang    string                       `json:"lang"`
 	Pages   []string                     `json:"pages"`
 	Strings map[string]map[string]string `json:"strings"`
 }
 
-func newTestServer(t *testing.T) *Server {
-	t.Helper()
-
-	return &Server{
-		db:     openTestDB(t),
-		ready:  &ReadyState{},
-		logger: discardLogger(),
-	}
-}
-
-// seedFrench imports a small fixture of French strings and returns the
-// import hash used as the ETag source.
+// seedFrench installs a small fixture of French strings and returns the
+// hash used as the ETag source.
 func seedFrench(t *testing.T, srv *Server) string {
 	t.Helper()
 
-	rows := []StringRow{
+	return seedSnapshot(t, srv, seedHash, []StringRow{
 		{Page: "a", Key: "hello", Lang: "fr", Value: "bonjour", UpdatedAt: time.Now()},
 		{Page: "a", Key: "welcome", Lang: "fr", Value: "bienvenue", UpdatedAt: time.Now()},
 		{Page: "b", Key: "bye", Lang: "fr", Value: "au revoir", UpdatedAt: time.Now()},
-	}
-	if err := srv.db.ReplaceImport(context.Background(), rows, seedHash, time.Now()); err != nil {
-		t.Fatalf("ReplaceImport: %v", err)
-	}
-	return seedHash
+	})
 }
 
 func doGet(t *testing.T, h http.Handler, target string, header map[string]string) *httptest.ResponseRecorder {
@@ -109,26 +95,64 @@ func TestReadyz(t *testing.T) {
 	srv := newTestServer(t)
 	h := srv.routes()
 
-	// Always 200 while the process is up, even before any servable data
-	// exists; the servable-data signal is `ready` on /status.
-	for _, ready := range []bool{false, true} {
-		srv.ready.SetReady(ready)
+	// Readiness reads the same snapshots /strings reads, so it cannot pass
+	// while the API would fail for want of data.
+	rec := doGet(t, h, "/readyz", nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("no data: status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	env := decodeEnvelope(t, rec)
+	if env.Ok {
+		t.Errorf("no data: ok = true, want false")
+	}
+	if env.Error == nil || env.Error.Code != "no_data" {
+		t.Errorf("no data: error = %+v, want code no_data", env.Error)
+	}
 
-		rec := doGet(t, h, "/readyz", nil)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("ready=%v: status = %d, want %d", ready, rec.Code, http.StatusOK)
-		}
-		env := decodeEnvelope(t, rec)
-		if !env.Ok {
-			t.Errorf("ready=%v: ok = false, want true", ready)
-		}
-		var data struct {
-			Status string `json:"status"`
-		}
-		decodeData(t, env, &data)
-		if data.Status != "ready" {
-			t.Errorf("ready=%v: status = %q, want %q", ready, data.Status, "ready")
-		}
+	seedFrench(t, srv)
+
+	rec = doGet(t, h, "/readyz", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("with data: status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var data struct {
+		Status string `json:"status"`
+	}
+	decodeData(t, decodeEnvelope(t, rec), &data)
+	if data.Status != "ready" {
+		t.Errorf("status = %q, want %q", data.Status, "ready")
+	}
+}
+
+func TestHealthzIgnoresMissingData(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Liveness must not depend on data: restarting cannot conjure an
+	// upstream, and failing here would turn a data problem into a restart
+	// loop.
+	rec := doGet(t, srv.routes(), "/healthz", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestHealthzFailsOnStalledSync(t *testing.T) {
+	srv := newTestServer(t)
+	seedFrench(t, srv)
+
+	// A sync loop that has stopped ticking is the one condition a restart
+	// actually fixes.
+	srv.now = func() time.Time {
+		return time.Now().Add(4 * srv.cfg.PullInterval)
+	}
+
+	rec := doGet(t, srv.routes(), "/healthz", nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	env := decodeEnvelope(t, rec)
+	if env.Error == nil || env.Error.Code != "sync_stalled" {
+		t.Errorf("error = %+v, want code sync_stalled", env.Error)
 	}
 }
 
@@ -147,40 +171,58 @@ func TestStatus(t *testing.T) {
 
 	var fields map[string]any
 	decodeData(t, env, &fields)
-	for _, k := range []string{"last_pull", "last_hash", "ready", "version"} {
+	for _, k := range []string{"pod", "version", "primary", "ready", "apps"} {
 		if _, present := fields[k]; !present {
 			t.Errorf("data missing field %q", k)
 		}
 	}
 
-	var data StatusResponse
+	var data PodStatus
 	decodeData(t, env, &data)
 	if data.Version != "dev" {
 		t.Errorf("version = %q, want %q", data.Version, "dev")
 	}
-	if data.Ready {
-		t.Errorf("ready = true, want false before SetReady")
+	if data.Pod != "test-pod" {
+		t.Errorf("pod = %q, want %q", data.Pod, "test-pod")
 	}
-	if data.LastHash != "" {
-		t.Errorf("last_hash = %q, want empty before import", data.LastHash)
+	if data.Ready {
+		t.Errorf("ready = true, want false before any import")
+	}
+	if len(data.Apps) != 1 {
+		t.Fatalf("len(apps) = %d, want 1", len(data.Apps))
+	}
+	if data.Apps[0].Hash != "" {
+		t.Errorf("apps[0].hash = %q, want empty before import", data.Apps[0].Hash)
 	}
 
 	hash := seedFrench(t, srv)
-	srv.ready.SetReady(true)
 
 	rec = doGet(t, h, "/status", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("after import: status = %d, want %d", rec.Code, http.StatusOK)
 	}
 	decodeData(t, decodeEnvelope(t, rec), &data)
-	if data.LastHash != hash {
-		t.Errorf("last_hash = %q, want %q", data.LastHash, hash)
-	}
-	if data.LastPull == "" {
-		t.Errorf("last_pull is empty after import")
-	}
 	if !data.Ready {
-		t.Errorf("ready = false, want true after SetReady")
+		t.Errorf("ready = false, want true after import")
+	}
+	if len(data.Apps) != 1 {
+		t.Fatalf("after import: len(apps) = %d, want 1", len(data.Apps))
+	}
+	app := data.Apps[0]
+	if app.App != defaultAppID {
+		t.Errorf("apps[0].app = %q, want %q", app.App, defaultAppID)
+	}
+	if app.Hash != hash {
+		t.Errorf("apps[0].hash = %q, want %q", app.Hash, hash)
+	}
+	if app.Rows != 3 {
+		t.Errorf("apps[0].rows = %d, want 3", app.Rows)
+	}
+	if app.LastPull == "" {
+		t.Errorf("apps[0].last_pull is empty after import")
+	}
+	if !app.Servable {
+		t.Errorf("apps[0].servable = false, want true")
 	}
 }
 
@@ -312,18 +354,35 @@ func TestGetStringsUnknownPage(t *testing.T) {
 	}
 }
 
-func TestGetStringsNoETagBeforeImport(t *testing.T) {
+func TestGetStringsWithoutDataIsUnavailable(t *testing.T) {
 	srv := newTestServer(t)
 
+	// Serving an empty 200 would look like "this page has no translations"
+	// to a client that cannot tell the difference.
 	rec := doGet(t, srv.routes(), "/strings?lang=fr&page=a", nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	env := decodeEnvelope(t, rec)
+	if env.Error == nil || env.Error.Code != "no_data" {
+		t.Errorf("error = %+v, want code no_data", env.Error)
 	}
 	if etag := rec.Header().Get("ETag"); etag != "" {
-		t.Errorf("ETag = %q, want no ETag on fresh db", etag)
+		t.Errorf("ETag = %q, want none without data", etag)
 	}
-	if cc := rec.Header().Get("Cache-Control"); cc != "" {
-		t.Errorf("Cache-Control = %q, want none on fresh db", cc)
+}
+
+func TestGetStringsUnknownApp(t *testing.T) {
+	srv := newTestServer(t)
+	seedFrench(t, srv)
+
+	rec := doGet(t, srv.routes(), "/strings?lang=fr&page=a&app=nope", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+	env := decodeEnvelope(t, rec)
+	if env.Error == nil || env.Error.Code != "unknown_app" {
+		t.Errorf("error = %+v, want code unknown_app", env.Error)
 	}
 }
 

@@ -21,8 +21,8 @@ type APIResponseReady struct {
 }
 
 type APIResponseStatus struct {
-	Ok   bool            `json:"ok"`
-	Data *StatusResponse `json:"data,omitempty"`
+	Ok   bool       `json:"ok"`
+	Data *PodStatus `json:"data,omitempty"`
 }
 
 type APIResponseStrings struct {
@@ -109,6 +109,11 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 		Paths: &openapi3.Paths{},
 	}
 
+	errResp, err := jsonContentFor(APIResponseError{})
+	if err != nil {
+		return nil, err
+	}
+
 	// ---- /healthz
 	health200, err := jsonContentFor(APIResponseHealth{})
 	if err != nil {
@@ -116,12 +121,16 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 	}
 	spec.Paths.Set("/healthz", &openapi3.PathItem{
 		Get: &openapi3.Operation{
-			Summary:     "Liveness endpoint",
+			Summary:     "Liveness: whether the process and its sync loop are alive",
 			OperationID: "getHealthz",
 			Responses: newResponses(map[string]*openapi3.ResponseRef{
 				"200": {Value: &openapi3.Response{
 					Description: ptrString("OK"),
 					Content:     health200,
+				}},
+				"503": {Value: &openapi3.Response{
+					Description: ptrString("Sync loop has stopped ticking"),
+					Content:     errResp,
 				}},
 			}),
 		},
@@ -132,18 +141,18 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 	if err != nil {
 		return nil, err
 	}
-	errResp, err := jsonContentFor(APIResponseError{})
-	if err != nil {
-		return nil, err
-	}
 	spec.Paths.Set("/readyz", &openapi3.PathItem{
 		Get: &openapi3.Operation{
-			Summary:     "Readiness endpoint (always ready while the process is up; see /status for the servable-data signal)",
+			Summary:     "Readiness: whether this pod holds servable translations",
 			OperationID: "getReadyz",
 			Responses: newResponses(map[string]*openapi3.ResponseRef{
 				"200": {Value: &openapi3.Response{
 					Description: ptrString("Ready"),
 					Content:     ready200,
+				}},
+				"503": {Value: &openapi3.Response{
+					Description: ptrString("No servable translations loaded"),
+					Content:     errResp,
 				}},
 			}),
 		},
@@ -156,22 +165,28 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 	}
 	spec.Paths.Set("/status", &openapi3.PathItem{
 		Get: &openapi3.Operation{
-			Summary:     "Service status",
+			Summary:     "This pod's status and per-application sync state",
 			OperationID: "getStatus",
 			Responses: newResponses(map[string]*openapi3.ResponseRef{
 				"200": {Value: &openapi3.Response{
 					Description: ptrString("OK"),
 					Content:     status200,
 				}},
-				"500": {Value: &openapi3.Response{
-					Description: ptrString("Internal error"),
-					Content:     errResp,
-				}},
 			}),
 		},
 	})
 
 	// ---- /strings parameters
+	paramApp := &openapi3.ParameterRef{
+		Value: &openapi3.Parameter{
+			Name:        "app",
+			In:          "query",
+			Required:    false,
+			Description: "Application id. Defaults to " + defaultAppID + ".",
+			Schema:      &openapi3.SchemaRef{Value: openapi3.NewStringSchema()},
+			Example:     defaultAppID,
+		},
+	}
 	paramLang := &openapi3.ParameterRef{
 		Value: &openapi3.Parameter{
 			Name:        "lang",
@@ -215,6 +230,7 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 			Summary:     "Get strings for one or more pages in a given language",
 			OperationID: "getStrings",
 			Parameters: openapi3.Parameters{
+				paramApp,
 				paramLang,
 				paramPage,
 				paramPages,
@@ -231,8 +247,12 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 					Description: ptrString("Bad request"),
 					Content:     errResp,
 				}},
-				"500": {Value: &openapi3.Response{
-					Description: ptrString("Internal error"),
+				"404": {Value: &openapi3.Response{
+					Description: ptrString("Unknown application"),
+					Content:     errResp,
+				}},
+				"503": {Value: &openapi3.Response{
+					Description: ptrString("No translations loaded for this application"),
 					Content:     errResp,
 				}},
 			}),

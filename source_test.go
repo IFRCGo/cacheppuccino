@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,10 +12,7 @@ import (
 )
 
 func testURLSource(rawURL string) *URLSource {
-	return NewURLSource(Config{
-		TranslationXLSXURL: rawURL,
-		HTTPTimeout:        5 * time.Second,
-	})
+	return NewURLSource(AppConfig{XLSXURL: rawURL}, 5*time.Second)
 }
 
 func TestURLSourceFetch(t *testing.T) {
@@ -165,19 +163,18 @@ func TestReadAllLimited(t *testing.T) {
 	}
 }
 
-// TestStatusReportsSourceAndPullOutcome covers the /status additions for QA
-// self-diagnosis: source kind, last pull error, and last import row count.
+// TestStatusReportsSourceAndPullOutcome covers the /status fields QA relies
+// on for self-diagnosis: source kind, last pull error, and row count.
 func TestStatusReportsSourceAndPullOutcome(t *testing.T) {
-	ctx := context.Background()
+	src := &stubSource{}
+	syncer, registry := newTestSyncer(t, src)
+	srv := NewServer(syncer.cfg, registry, syncer.state, syncer,
+		alwaysPrimary{identity: syncer.cfg.PodName}, discardLogger())
 
-	db := openTestDB(t)
-	ready := &ReadyState{}
-	ready.SetReady(true)
-	srv := &Server{db: db, ready: ready, logger: discardLogger(), sourceName: "url"}
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
 
-	getStatus := func() StatusResponse {
+	getApp := func() AppStatus {
 		t.Helper()
 		resp, err := http.Get(ts.URL + "/status")
 		if err != nil {
@@ -188,51 +185,61 @@ func TestStatusReportsSourceAndPullOutcome(t *testing.T) {
 			t.Fatalf("GET /status = %d, want 200", resp.StatusCode)
 		}
 		var envelope struct {
-			Ok   bool           `json:"ok"`
-			Data StatusResponse `json:"data"`
+			Ok   bool      `json:"ok"`
+			Data PodStatus `json:"data"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 			t.Fatalf("decode /status: %v", err)
 		}
-		return envelope.Data
+		if len(envelope.Data.Apps) != 1 {
+			t.Fatalf("len(apps) = %d, want 1", len(envelope.Data.Apps))
+		}
+		return envelope.Data.Apps[0]
 	}
 
-	// Fresh DB: source is reported, counters empty.
-	st := getStatus()
-	if st.Source != "url" {
-		t.Errorf("source = %q, want url", st.Source)
+	// No data yet: the source is reported, counters are empty.
+	st := getApp()
+	if st.Source != "stub" {
+		t.Errorf("source = %q, want stub", st.Source)
 	}
-	if st.LastPullError != "" || st.LastImportRows != 0 {
+	if st.LastPullError != "" || st.Rows != 0 {
 		t.Errorf("fresh status = %+v, want empty error and 0 rows", st)
 	}
 
-	// After an import: row count present.
-	rows := []StringRow{
-		{Page: "home", Key: "a", Lang: "en", Value: "A", UpdatedAt: time.Now()},
-		{Page: "home", Key: "b", Lang: "en", Value: "B", UpdatedAt: time.Now()},
+	// After an import: row count and hash present.
+	src.body = translationsXLSX(t, [][]string{
+		{"page", "key", "en"},
+		{"home", "a", "A"},
+		{"home", "b", "B"},
+	})
+	syncer.pullApp(context.Background(), defaultAppID, "test")
+
+	st = getApp()
+	if st.Rows != 2 {
+		t.Errorf("rows = %d, want 2", st.Rows)
 	}
-	if err := db.ReplaceImport(ctx, rows, "hash-1", time.Now()); err != nil {
-		t.Fatalf("ReplaceImport: %v", err)
+	if st.Hash == "" {
+		t.Errorf("hash is empty after an import")
 	}
-	st = getStatus()
-	if st.LastImportRows != 2 {
-		t.Errorf("last_import_rows = %d, want 2", st.LastImportRows)
-	}
-	if st.LastHash != "hash-1" {
-		t.Errorf("last_hash = %q, want hash-1", st.LastHash)
+	if !st.Servable {
+		t.Errorf("servable = false, want true after an import")
 	}
 
-	// A recorded pull failure surfaces, then clears.
-	if err := db.SetMeta(ctx, metaKeyLastPullError, "download failed: 404"); err != nil {
-		t.Fatalf("SetMeta: %v", err)
+	// A pull failure surfaces without disturbing the served data, then clears.
+	src.err = errors.New("download failed: 404")
+	syncer.pullApp(context.Background(), defaultAppID, "test")
+
+	st = getApp()
+	if st.LastPullError == "" {
+		t.Errorf("last_pull_error is empty after a failed pull")
 	}
-	if st = getStatus(); st.LastPullError != "download failed: 404" {
-		t.Errorf("last_pull_error = %q, want the recorded error", st.LastPullError)
+	if st.Rows != 2 {
+		t.Errorf("rows = %d, want the previous import to survive a failure", st.Rows)
 	}
-	if err := db.SetMeta(ctx, metaKeyLastPullError, ""); err != nil {
-		t.Fatalf("SetMeta: %v", err)
-	}
-	if st = getStatus(); st.LastPullError != "" {
-		t.Errorf("last_pull_error = %q, want cleared", st.LastPullError)
+
+	src.err = nil
+	syncer.pullApp(context.Background(), defaultAppID, "test")
+	if st = getApp(); st.LastPullError != "" {
+		t.Errorf("last_pull_error = %q, want cleared after success", st.LastPullError)
 	}
 }

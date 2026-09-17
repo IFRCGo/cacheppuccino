@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // maxXLSXBytes caps downloads so a wrong URL (a huge file or an endless
@@ -36,12 +37,12 @@ type URLSource struct {
 	http        *http.Client
 }
 
-func NewURLSource(cfg Config) *URLSource {
+func NewURLSource(app AppConfig, timeout time.Duration) *URLSource {
 	return &URLSource{
-		url:         cfg.TranslationXLSXURL,
-		redactedURL: redactURL(cfg.TranslationXLSXURL),
+		url:         app.XLSXURL,
+		redactedURL: redactURL(app.XLSXURL),
 		http: &http.Client{
-			Timeout: cfg.HTTPTimeout,
+			Timeout: timeout,
 		},
 	}
 }
@@ -123,4 +124,60 @@ func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("response exceeds %d bytes", limit)
 	}
 	return b, nil
+}
+
+// APISource fetches the XLSX export from the IFRC translation API.
+type APISource struct {
+	baseURL       string
+	applicationID string
+	apiKey        string
+	http          *http.Client
+}
+
+func NewAPISource(app AppConfig, timeout time.Duration) *APISource {
+	return &APISource{
+		baseURL:       app.BaseURL,
+		applicationID: app.ApplicationID,
+		apiKey:        app.APIKey,
+		http: &http.Client{
+			Timeout: timeout,
+		},
+	}
+}
+
+func (c *APISource) Name() string { return "api" }
+
+func (c *APISource) Fetch(ctx context.Context, logger *slog.Logger) ([]byte, error) {
+	url := fmt.Sprintf("%s/api/Application/%s/Translation/export", c.baseURL, c.applicationID)
+	logger.Info("pull: requesting export", slog.String("url", url))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.apiKey != "" {
+		req.Header.Set("X-API-KEY", c.apiKey)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("export request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if !isHTTPSuccess(resp.StatusCode) {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		return nil, fmt.Errorf("download failed: %s: %s", resp.Status, string(b))
+	}
+
+	return readAllLimited(resp.Body, maxXLSXBytes)
+}
+
+// NewSource builds the source an application's config selects.
+func NewSource(app AppConfig, timeout time.Duration) XLSXSource {
+	if app.Source == sourceURL {
+		return NewURLSource(app, timeout)
+	}
+	return NewAPISource(app, timeout)
 }

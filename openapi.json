@@ -33,11 +33,44 @@
             },
             "description": "OK"
           },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "nullable": true,
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "details": {
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sync loop has stopped ticking"
+          },
           "default": {
             "description": ""
           }
         },
-        "summary": "Liveness endpoint"
+        "summary": "Liveness: whether the process and its sync loop are alive"
       }
     },
     "/openapi.json": {
@@ -73,6 +106,9 @@
                     "data": {
                       "nullable": true,
                       "properties": {
+                        "reason": {
+                          "type": "string"
+                        },
                         "status": {
                           "type": "string"
                         }
@@ -89,60 +125,7 @@
             },
             "description": "Ready"
           },
-          "default": {
-            "description": ""
-          }
-        },
-        "summary": "Readiness endpoint (always ready while the process is up; see /status for the servable-data signal)"
-      }
-    },
-    "/status": {
-      "get": {
-        "operationId": "getStatus",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "data": {
-                      "nullable": true,
-                      "properties": {
-                        "last_hash": {
-                          "type": "string"
-                        },
-                        "last_import_rows": {
-                          "type": "integer"
-                        },
-                        "last_pull": {
-                          "type": "string"
-                        },
-                        "last_pull_error": {
-                          "type": "string"
-                        },
-                        "ready": {
-                          "type": "boolean"
-                        },
-                        "source": {
-                          "type": "string"
-                        },
-                        "version": {
-                          "type": "string"
-                        }
-                      },
-                      "type": "object"
-                    },
-                    "ok": {
-                      "type": "boolean"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "500": {
+          "503": {
             "content": {
               "application/json": {
                 "schema": {
@@ -173,19 +156,118 @@
                 }
               }
             },
-            "description": "Internal error"
+            "description": "No servable translations loaded"
           },
           "default": {
             "description": ""
           }
         },
-        "summary": "Service status"
+        "summary": "Readiness: whether this pod holds servable translations"
+      }
+    },
+    "/status": {
+      "get": {
+        "operationId": "getStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "nullable": true,
+                      "properties": {
+                        "apps": {
+                          "items": {
+                            "properties": {
+                              "age_seconds": {
+                                "format": "int64",
+                                "type": "integer"
+                              },
+                              "app": {
+                                "type": "string"
+                              },
+                              "consecutive_failures": {
+                                "type": "integer"
+                              },
+                              "hash": {
+                                "type": "string"
+                              },
+                              "imported_at": {
+                                "type": "string"
+                              },
+                              "last_pull": {
+                                "type": "string"
+                              },
+                              "last_pull_error": {
+                                "type": "string"
+                              },
+                              "rows": {
+                                "type": "integer"
+                              },
+                              "servable": {
+                                "type": "boolean"
+                              },
+                              "source": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "pod": {
+                          "type": "string"
+                        },
+                        "primary": {
+                          "type": "boolean"
+                        },
+                        "primary_holder": {
+                          "type": "string"
+                        },
+                        "ready": {
+                          "type": "boolean"
+                        },
+                        "uptime_seconds": {
+                          "format": "int64",
+                          "type": "integer"
+                        },
+                        "version": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "description": ""
+          }
+        },
+        "summary": "This pod's status and per-application sync state"
       }
     },
     "/strings": {
       "get": {
         "operationId": "getStrings",
         "parameters": [
+          {
+            "description": "Application id. Defaults to default.",
+            "example": "default",
+            "in": "query",
+            "name": "app",
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "description": "Language code (e.g. en, fr, es).",
             "example": "en",
@@ -226,6 +308,9 @@
                     "data": {
                       "nullable": true,
                       "properties": {
+                        "app": {
+                          "type": "string"
+                        },
                         "lang": {
                           "type": "string"
                         },
@@ -293,7 +378,7 @@
             },
             "description": "Bad request"
           },
-          "500": {
+          "404": {
             "content": {
               "application/json": {
                 "schema": {
@@ -324,7 +409,40 @@
                 }
               }
             },
-            "description": "Internal error"
+            "description": "Unknown application"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "nullable": true,
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "details": {
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "No translations loaded for this application"
           },
           "default": {
             "description": ""
