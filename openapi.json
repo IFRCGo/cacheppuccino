@@ -59,6 +59,10 @@
                                 "format": "int64",
                                 "type": "integer"
                               },
+                              "pull_age_seconds": {
+                                "format": "int64",
+                                "type": "integer"
+                              },
                               "rows": {
                                 "type": "integer"
                               },
@@ -98,6 +102,9 @@
                                       "type": "string"
                                     },
                                     "imported_at": {
+                                      "type": "string"
+                                    },
+                                    "last_pull_at": {
                                       "type": "string"
                                     },
                                     "last_pull_error": {

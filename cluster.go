@@ -34,8 +34,11 @@ type ClusterAppView struct {
 	InSync           bool     `json:"in_sync"`
 	Hashes           []string `json:"hashes"`
 	NewestAgeSeconds int64    `json:"newest_age_seconds"`
-	Rows             int      `json:"rows"`
-	ServablePods     int      `json:"servable_pods"`
+	// PullAgeSeconds is how long ago any pod last reached upstream
+	// successfully. It is -1 when no pod has ever managed one.
+	PullAgeSeconds int64 `json:"pull_age_seconds"`
+	Rows           int   `json:"rows"`
+	ServablePods   int   `json:"servable_pods"`
 }
 
 // ClusterView is the whole fleet as one pod sees it.
@@ -120,7 +123,14 @@ func (s *Server) clusterView(ctx context.Context) ClusterView {
 		return s.clusterCache
 	}
 
-	view := s.buildClusterView(ctx, now)
+	// Detached from the caller: the view is cached and feeds the alarm
+	// timers, so a client that disconnects mid-survey would otherwise
+	// publish a one-pod fleet to everyone else and reset the timers of
+	// alarms that were legitimately accumulating.
+	buildCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.PeerTimeout+2*time.Second)
+	defer cancel()
+
+	view := s.buildClusterView(buildCtx, now)
 	s.clusterCache, s.clusterAt = view, now
 	return view
 }
@@ -182,23 +192,33 @@ func primaryOf(pods []PeerInfo) string {
 // without the snapshot yet are not counted as divergence: a pod that has
 // never loaded anything is a readiness problem, not a consistency one.
 func appViewAcross(pods []PeerInfo, appID string, now time.Time) ClusterAppView {
-	view := ClusterAppView{App: appID, InSync: true}
+	view := ClusterAppView{App: appID, InSync: true, PullAgeSeconds: -1}
 
 	seen := make(map[string]struct{})
-	var newest time.Time
+	var newest, lastPull time.Time
 
 	for _, p := range pods {
+		// Only the primary pulls, so the freshest pull time across the
+		// fleet is the one that describes the fleet.
+		if at, err := time.Parse(time.RFC3339, p.appLastPull(appID)); err == nil && at.After(lastPull) {
+			lastPull = at
+		}
+
 		app, ok := p.app(appID)
 		if !ok || !app.Servable || app.Hash == "" {
 			continue
 		}
 		view.ServablePods++
-		view.Rows = app.Rows
+		view.Rows = max(view.Rows, app.Rows)
 		seen[app.Hash] = struct{}{}
 
 		if at, err := time.Parse(time.RFC3339, app.ImportedAt); err == nil && at.After(newest) {
 			newest = at
 		}
+	}
+
+	if !lastPull.IsZero() {
+		view.PullAgeSeconds = int64(now.Sub(lastPull).Seconds())
 	}
 
 	for h := range seen {
@@ -227,11 +247,17 @@ func (s *Server) conditions(view ClusterView, now time.Time) []condition {
 
 	// With election off there is no lease to hold, so the alarm is moot.
 	if s.cfg.LeaderElection == electionLease {
+		detail := "no pod holds the lease; nothing is pulling from upstream"
+		if h, ok := s.elector.(electorHealth); ok {
+			if _, lastErr := h.Health(); lastErr != "" {
+				detail += ": " + lastErr
+			}
+		}
 		conds = append(conds, condition{
 			name:   alarmNoPrimary,
 			active: view.Primary == "",
 			after:  s.cfg.AlarmNoPrimary,
-			detail: "no pod holds the lease; nothing is pulling from upstream",
+			detail: detail,
 		})
 	}
 
@@ -249,11 +275,16 @@ func (s *Server) conditions(view ClusterView, now time.Time) []condition {
 	})
 
 	for _, app := range view.Apps {
-		stale := app.ServablePods > 0 && time.Duration(app.NewestAgeSeconds)*time.Second > s.cfg.AlarmSnapshotAge
+		// Measured from the last successful pull, not from the snapshot's
+		// import time: an export that simply does not change leaves
+		// ImportedAt pinned, and measuring that would alert on a healthy
+		// fleet serving stable content. A fleet that has never pulled is
+		// covered by no_primary and pull_failing instead.
+		stale := app.PullAgeSeconds >= 0 && time.Duration(app.PullAgeSeconds)*time.Second > s.cfg.AlarmSnapshotAge
 		conds = append(conds, condition{
 			name:   alarmSnapshotStale + ":" + app.App,
 			active: stale,
-			detail: fmt.Sprintf("%s: newest snapshot is %ds old", app.App, app.NewestAgeSeconds),
+			detail: fmt.Sprintf("%s: last successful pull was %ds ago", app.App, app.PullAgeSeconds),
 		})
 
 		conds = append(conds, condition{
@@ -273,11 +304,17 @@ func (s *Server) conditions(view ClusterView, now time.Time) []condition {
 	return conds
 }
 
-// worstPullFailure reports the longest failure streak any pod has for an
-// application. Only the primary pulls, so in practice this is its streak.
+// worstPullFailure reports the failure streak of the pod that is actually
+// pulling. Only the primary runs pullApp, and only pullApp clears the count,
+// so a pod demoted mid-outage carries its streak for the rest of its life.
+// Counting every pod would keep this alarm firing long after a new primary
+// recovered.
 func worstPullFailure(pods []PeerInfo, appID string) (int, string) {
 	worst, detail := 0, ""
 	for _, p := range pods {
+		if !p.Primary {
+			continue
+		}
 		app, ok := p.app(appID)
 		if !ok || app.Failures <= worst {
 			continue
