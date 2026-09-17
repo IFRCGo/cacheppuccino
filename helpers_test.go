@@ -55,7 +55,7 @@ func seedSnapshot(t *testing.T, srv *Server, hash string, rows []StringRow) stri
 	if !ok {
 		t.Fatalf("no holder for %q", defaultAppID)
 	}
-	snap := NewSnapshot(defaultAppID, hash, time.Now(), rows)
+	snap := NewSnapshot(defaultAppID, hash, time.Now(), rows, nil)
 	if !snap.Servable() {
 		t.Fatalf("seed snapshot is not servable")
 	}

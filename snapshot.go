@@ -23,6 +23,11 @@ type Snapshot struct {
 	// byPage maps page -> lang -> key -> value.
 	byPage map[string]map[string]map[string]string
 
+	// raw is the XLSX this snapshot was built from, kept so peers can
+	// hydrate from it and verify the hash end to end. It costs one file's
+	// worth of memory and saves peers a round trip to upstream.
+	raw []byte
+
 	// probePage and probeLang name a (page, lang) pair known to hold at
 	// least one string, so readiness can exercise a real lookup without
 	// configuration.
@@ -40,6 +45,15 @@ func (s *Snapshot) Version() int64 {
 	return s.ImportedAt.UnixMilli()
 }
 
+// Raw returns the XLSX bytes this snapshot was built from, empty when the
+// snapshot came from a source that did not carry them.
+func (s *Snapshot) Raw() []byte {
+	if s == nil {
+		return nil
+	}
+	return s.raw
+}
+
 func (s *Snapshot) Age(now time.Time) time.Duration {
 	if s == nil {
 		return 0
@@ -50,7 +64,7 @@ func (s *Snapshot) Age(now time.Time) time.Duration {
 // NewSnapshot builds a snapshot from parsed XLSX rows. Page and language
 // strings repeat once per key, so they are interned: the map keys share one
 // backing string each instead of one copy per row.
-func NewSnapshot(appID, hash string, importedAt time.Time, rows []StringRow) *Snapshot {
+func NewSnapshot(appID, hash string, importedAt time.Time, rows []StringRow, raw []byte) *Snapshot {
 	intern := make(map[string]string, 64)
 	pool := func(s string) string {
 		if v, ok := intern[s]; ok {
@@ -85,6 +99,7 @@ func NewSnapshot(appID, hash string, importedAt time.Time, rows []StringRow) *Sn
 		ImportedAt: importedAt.UTC(),
 		RowCount:   len(rows),
 		byPage:     byPage,
+		raw:        raw,
 	}
 	s.probePage, s.probeLang = pickProbe(byPage)
 	return s

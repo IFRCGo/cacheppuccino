@@ -69,11 +69,20 @@ func run(cfg Config, logger *slog.Logger) error {
 
 	syncer := NewSyncer(cfg, registry, cache, state, elector, logger)
 
+	// Without a peer service there are no siblings to hydrate from, which
+	// is the single-container case.
+	var peers *PeerClient
+	if cfg.PeerService != "" {
+		peers = NewPeerClient(cfg, logger)
+		syncer.SetHydrator(peers)
+	}
+
 	// Seed from local disk before serving: a restarted container should
 	// answer immediately rather than wait on a peer or on upstream.
 	syncer.LoadFromCache()
 
 	srv := NewServer(cfg, registry, state, syncer, elector, logger)
+	srv.peers = peers
 
 	logger.Info("cacheppuccino starting",
 		slog.String("version", version),
@@ -83,6 +92,7 @@ func run(cfg Config, logger *slog.Logger) error {
 		slog.String("election", cfg.LeaderElection),
 		slog.String("pull_interval", cfg.PullInterval.String()),
 		slog.String("cache_dir", cfg.CacheDir),
+		slog.String("peer_service", cfg.PeerService),
 	)
 
 	// No BaseContext: request contexts must outlive the shutdown signal
@@ -97,10 +107,26 @@ func run(cfg Config, logger *slog.Logger) error {
 		MaxHeaderBytes:    1 << 20,
 	}
 
-	serveErr := make(chan error, 1)
+	// The internal listener carries pod-to-pod traffic only. It is never
+	// added to the Service or the ingress.
+	internalServer := &http.Server{
+		Addr:              cfg.InternalListenAddr,
+		Handler:           srv.internalRoutes(),
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+
+	serveErr := make(chan error, 2)
 	go func() {
 		logger.Info("http server starting", slog.String("addr", cfg.ListenAddr))
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+		}
+	}()
+	go func() {
+		logger.Info("internal server starting", slog.String("addr", cfg.InternalListenAddr))
+		if err := internalServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 		}
 	}()
@@ -121,6 +147,9 @@ func run(cfg Config, logger *slog.Logger) error {
 		logger.Error("http shutdown failed", slog.String("err", err.Error()))
 	} else {
 		logger.Info("http server stopped")
+	}
+	if err := internalServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("internal shutdown failed", slog.String("err", err.Error()))
 	}
 	return nil
 }

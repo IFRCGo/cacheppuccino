@@ -23,6 +23,14 @@ func writeOK[T any](w http.ResponseWriter, status int, data T) {
 	_ = json.NewEncoder(w).Encode(APIResponse[T]{Ok: true, Data: &data})
 }
 
+// writeJSON emits a bare value, no envelope. The internal endpoints are
+// consumed by other pods rather than by API clients.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
 func writeErr(w http.ResponseWriter, status int, code, message string, details map[string]string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)

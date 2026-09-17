@@ -92,7 +92,7 @@ func (s *Syncer) LoadFromCache() {
 			s.logger.Warn("cache: discarding unparseable entry", slog.String("app", id), slog.String("err", err.Error()))
 			continue
 		}
-		snap := NewSnapshot(id, meta.Hash, meta.ImportedAt, rows)
+		snap := NewSnapshot(id, meta.Hash, meta.ImportedAt, rows, xlsx)
 		if !snap.Servable() {
 			continue
 		}
@@ -224,7 +224,7 @@ func (s *Syncer) pullApp(ctx context.Context, appID, kind string) {
 		return
 	}
 
-	snap := NewSnapshot(appID, hash, s.now(), rows)
+	snap := NewSnapshot(appID, hash, s.now(), rows, xlsx)
 	if !snap.Servable() {
 		st.recordFailure(errEmptyImport)
 		logger.Warn(kind + " pull produced no servable rows; keeping previous data")

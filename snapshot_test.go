@@ -16,7 +16,7 @@ func testRows() []StringRow {
 }
 
 func TestSnapshotGet(t *testing.T) {
-	snap := NewSnapshot(defaultAppID, "h1", time.Now(), testRows())
+	snap := NewSnapshot(defaultAppID, "h1", time.Now(), testRows(), nil)
 
 	tests := []struct {
 		name      string
@@ -83,7 +83,7 @@ func TestSnapshotDuplicateRowsLastOneWins(t *testing.T) {
 	snap := NewSnapshot(defaultAppID, "h1", time.Now(), []StringRow{
 		{Page: "home", Key: "greeting", Lang: "en", Value: "first"},
 		{Page: "home", Key: "greeting", Lang: "en", Value: "second"},
-	})
+	}, nil)
 
 	got, _ := snap.Get([]string{"home"}, "en")
 	if got["home"]["greeting"] != "second" {
@@ -98,8 +98,8 @@ func TestSnapshotServable(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
-		{"no rows", NewSnapshot(defaultAppID, "h", time.Now(), nil), false},
-		{"with rows", NewSnapshot(defaultAppID, "h", time.Now(), testRows()), true},
+		{"no rows", NewSnapshot(defaultAppID, "h", time.Now(), nil, nil), false},
+		{"with rows", NewSnapshot(defaultAppID, "h", time.Now(), testRows(), nil), true},
 	}
 
 	for _, tc := range tests {
@@ -114,10 +114,10 @@ func TestSnapshotServable(t *testing.T) {
 // The probe pair must be identical on every pod holding the same content,
 // so readiness means the same thing fleet-wide.
 func TestSnapshotProbeIsDeterministic(t *testing.T) {
-	a := NewSnapshot(defaultAppID, "h", time.Now(), testRows())
+	a := NewSnapshot(defaultAppID, "h", time.Now(), testRows(), nil)
 
 	shuffled := []StringRow{testRows()[2], testRows()[0], testRows()[1]}
-	b := NewSnapshot(defaultAppID, "h", time.Now(), shuffled)
+	b := NewSnapshot(defaultAppID, "h", time.Now(), shuffled, nil)
 
 	if a.probePage != b.probePage || a.probeLang != b.probeLang {
 		t.Errorf("probe = (%q,%q) and (%q,%q), want identical",
@@ -129,8 +129,8 @@ func TestHolderStoreIfNewer(t *testing.T) {
 	base := time.Now()
 	h := &Holder{appID: defaultAppID}
 
-	older := NewSnapshot(defaultAppID, "old", base, testRows())
-	newer := NewSnapshot(defaultAppID, "new", base.Add(time.Minute), testRows())
+	older := NewSnapshot(defaultAppID, "old", base, testRows(), nil)
+	newer := NewSnapshot(defaultAppID, "new", base.Add(time.Minute), testRows(), nil)
 
 	if !h.StoreIfNewer(newer) {
 		t.Fatalf("first store rejected")
@@ -147,7 +147,7 @@ func TestHolderStoreIfNewer(t *testing.T) {
 
 	// Same content at a later timestamp is not a change worth swapping for:
 	// the ETag would not move and clients would re-download for nothing.
-	same := NewSnapshot(defaultAppID, "new", base.Add(time.Hour), testRows())
+	same := NewSnapshot(defaultAppID, "new", base.Add(time.Hour), testRows(), nil)
 	if h.StoreIfNewer(same) {
 		t.Errorf("adopted a snapshot with an unchanged hash")
 	}
@@ -162,7 +162,7 @@ func TestHolderStoreIfNewerIsRaceFree(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			h.StoreIfNewer(NewSnapshot(defaultAppID, string(rune('a'+n)), base.Add(time.Duration(n)*time.Second), testRows()))
+			h.StoreIfNewer(NewSnapshot(defaultAppID, string(rune('a'+n)), base.Add(time.Duration(n)*time.Second), testRows(), nil))
 		}(i)
 	}
 	wg.Wait()
@@ -182,7 +182,7 @@ func TestRegistryServableNeedsOnlyOneApp(t *testing.T) {
 	// One broken application must not make the pod unready for the healthy
 	// one; /strings answers 503 per application instead.
 	h, _ := r.Holder("a")
-	h.Store(NewSnapshot("a", "h", time.Now(), testRows()))
+	h.Store(NewSnapshot("a", "h", time.Now(), testRows(), nil))
 
 	if !r.Servable() {
 		t.Errorf("registry with one loaded app reported not servable")

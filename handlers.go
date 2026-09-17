@@ -15,6 +15,7 @@ type Server struct {
 	state    *State
 	syncer   *Syncer
 	elector  Elector
+	peers    *PeerClient
 	logger   *slog.Logger
 
 	now func() time.Time
