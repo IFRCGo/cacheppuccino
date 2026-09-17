@@ -23,7 +23,7 @@ spec:
               service:
                 name: {{ include "cacheppuccino.fullname" . }}
                 port:
-                  number: 8080
+                  number: {{ .Values.service.port }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
     - secretName: {{ required "ingress.tls.secretName" .Values.ingress.tls.secretName }}

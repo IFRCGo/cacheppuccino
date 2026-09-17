@@ -8,9 +8,11 @@ metadata:
   labels:
     {{- include "cacheppuccino.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   strategy:
-    type: Recreate
+    {{- toYaml .Values.strategy | nindent 4 }}
   selector:
     matchLabels:
       {{- include "cacheppuccino.selectorLabels" . | nindent 6 }}
@@ -27,6 +29,7 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "cacheppuccino.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -43,6 +46,30 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+            - name: internal
+              containerPort: {{ .Values.service.internalPort }}
+              protocol: TCP
+          env:
+            # Lease identity and peer identity: a pod has to know which pod
+            # it is before it can tell itself apart from its siblings.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: LEASE_NAME
+              value: {{ include "cacheppuccino.fullname" . | quote }}
+            {{- if .Values.headlessService.enabled }}
+            - name: PEER_SERVICE
+              value: {{ include "cacheppuccino.headlessServiceName" . | quote }}
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "cacheppuccino.fullname" . }}
@@ -52,28 +79,35 @@ spec:
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- if gt (int .Values.preStopSleepSeconds) 0 }}
+          lifecycle:
+            preStop:
+              # Keep serving while endpoint removal propagates to the
+              # ingress; shutdown begins only after this returns.
+              sleep:
+                seconds: {{ .Values.preStopSleepSeconds }}
+          {{- end }}
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            {{- toYaml .Values.probes.startup | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
-            timeoutSeconds: 2
-            failureThreshold: 3
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
           readinessProbe:
             httpGet:
               path: /readyz
               port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
-            timeoutSeconds: 2
-            failureThreshold: 6
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
-            {{- if .Values.sqlite.enabled }}
-            - name: sqlite
-              mountPath: {{ .Values.sqlite.mountPath | quote }}
+            {{- if .Values.cache.enabled }}
+            - name: cache
+              mountPath: {{ .Values.cache.mountPath | quote }}
             {{- end }}
             {{- if .Values.secretsStoreCsiDriver.enabled }}
             - name: secrets-store
@@ -81,10 +115,10 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
-        {{- if .Values.sqlite.enabled }}
-        - name: sqlite
-          persistentVolumeClaim:
-            claimName: {{ default (include "cacheppuccino.fullname" .) .Values.sqlite.existingClaim }}
+        {{- if .Values.cache.enabled }}
+        - name: cache
+          emptyDir:
+            sizeLimit: {{ .Values.cache.sizeLimit | quote }}
         {{- end }}
         {{- if .Values.secretsStoreCsiDriver.enabled }}
         - name: secrets-store
@@ -94,6 +128,15 @@ spec:
             volumeAttributes:
               secretProviderClass: {{ include "cacheppuccino.secretProviderName" . }}
         {{- end }}
+      {{- if .Values.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpreadConstraints.maxSkew }}
+          topologyKey: {{ .Values.topologySpreadConstraints.topologyKey }}
+          whenUnsatisfiable: {{ .Values.topologySpreadConstraints.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "cacheppuccino.selectorLabels" . | nindent 14 }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

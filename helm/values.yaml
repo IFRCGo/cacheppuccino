@@ -1,5 +1,16 @@
 enabled: true
-replicaCount: 1
+
+# Three replicas tolerate one node drain while leaving a warm peer for a new
+# pod to hydrate from.
+replicaCount: 3
+
+# maxUnavailable 0 keeps a warm pod serving until a new one reports ready,
+# and a new pod only reports ready once it holds servable translations.
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
 
 image:
   repository: ghcr.io/ifrcgo/cacheppuccino
@@ -18,20 +29,33 @@ serviceAccount:
 podAnnotations: {}
 podLabels: {}
 
-podSecurityContext: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
 
-# NOTE:
-# cacheppuccino currently runs as root in Docker for SQLite volume simplicity.
-# Keep this as-is if you use SQLite PVC.
 securityContext:
-  runAsUser: 0
-  runAsGroup: 0
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 service:
   type: ClusterIP
   port: 8080
+  # Pod-to-pod traffic (peer hydration). Published only on the headless
+  # Service, never through the ingress.
+  internalPort: 8081
+
+# Headless Service for peer discovery. publishNotReadyAddresses keeps a
+# broken pod visible in /cluster, which is when you most want to see it.
+headlessService:
+  enabled: true
+  publishNotReadyAddresses: true
 
 ingress:
   enabled: false
@@ -42,40 +66,83 @@ ingress:
     enabled: false
     secretName: ""
 
+# The whole dataset is held in memory, and an import briefly holds the old
+# snapshot alongside the new one. Size these from a measurement of the real
+# export rather than from these defaults.
 resources:
   requests:
     cpu: 100m
-    memory: 128Mi
+    memory: 256Mi
   limits:
     cpu: 500m
-    memory: 512Mi
+    memory: 1Gi
 
+# Liveness reports the process; readiness reports whether this pod holds
+# servable translations. The startup probe gives the first hydration room
+# without letting liveness restart a pod that is merely still starting.
+probes:
+  startup:
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 30
+  liveness:
+    initialDelaySeconds: 0
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 0
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+# Endpoint removal propagates asynchronously, so the pod keeps serving for a
+# moment after it is told to stop. Without this, a rolling deploy drops the
+# requests it is meant to protect.
+terminationGracePeriodSeconds: 45
+preStopSleepSeconds: 10
+
+podDisruptionBudget:
+  enabled: true
+  # With 1, a drain can leave a single pod, and evicting that one leaves a
+  # replacement with no warm peer to hydrate from.
+  minAvailable: 2
+
+topologySpreadConstraints:
+  enabled: true
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  # ScheduleAnyway so a small cluster can still place all replicas.
+  whenUnsatisfiable: ScheduleAnyway
+
+# Leader election needs get/create/update on one Lease in this namespace.
+rbac:
+  create: true
+
+# Disabled: availability is what replicas buy today, not throughput. Safe to
+# enable once several applications share these pods.
 autoscaling:
   enabled: false
-  minReplicas: 1
-  maxReplicas: 2
+  minReplicas: 3
+  maxReplicas: 10
   targetCPUUtilizationPercentage: 80
 
 nodeSelector: {}
 tolerations: []
 affinity: {}
 
-sqlite:
+# Snapshot cache on an emptyDir: it only has to survive container restarts
+# within a pod. Peer hydration covers rescheduling, rollouts and drains, so
+# there is no PersistentVolume and no storage class to get wrong.
+cache:
   enabled: true
-  mountPath: /data
-  filename: cacheppuccino.db
-
-  # If set, chart will not create PVC and will use existingClaim
-  existingClaim: ""
-
-  pvc:
-    storageClassName: ""
-    accessModes:
-      - ReadWriteOnce
-    size: 500Mi
+  mountPath: /cache
+  sizeLimit: 256Mi
 
 env:
   LISTEN_ADDR: ":8080"
+  INTERNAL_LISTEN_ADDR: ":8081"
   LOG_LEVEL: "info"
   # api: pull from the IFRC translation service (needs TRANSLATION_BASE_URL,
   #      TRANSLATION_APPLICATION_ID and the TRANSLATION_API_KEY secret).
@@ -84,8 +151,40 @@ env:
   TRANSLATION_BASE_URL: ""
   TRANSLATION_APPLICATION_ID: ""
   PULL_INTERVAL: "10m"
+  PULL_CONCURRENCY: "4"
   HTTP_TIMEOUT: "30s"
   INITIAL_PULL_DEADLINE: "45s"
+  # Retry fast until the first successful hydration: waiting a whole pull
+  # interval after a transient failure would stall a rollout.
+  INITIAL_PULL_BACKOFF_MIN: "2s"
+  INITIAL_PULL_BACKOFF_MAX: "30s"
+
+  # Discarded beyond MAX_CACHE_AGE so a long-restarted pod does not quietly
+  # serve content the rest of the fleet has moved past.
+  MAX_CACHE_AGE: "24h"
+
+  # How quickly a follower notices the primary has new content.
+  PEER_POLL_INTERVAL: "5s"
+  PEER_TIMEOUT: "3s"
+
+  LEADER_ELECTION: "lease"
+  LEASE_DURATION: "15s"
+  LEASE_RENEW_INTERVAL: "5s"
+
+  # Fleet alarms for /monitor. These raise an alert; none of them can make a
+  # pod unready.
+  # Normal failover is seconds, so anything sustained means RBAC or the API
+  # server is broken.
+  ALARM_NO_PRIMARY: "5m"
+  # Empty derives 4x PULL_INTERVAL, which follows a shortened interval
+  # instead of ignoring it.
+  ALARM_SNAPSHOT_AGE: ""
+  # Brief divergence while a new snapshot propagates is normal.
+  ALARM_DIVERGENCE: "2m"
+  ALARM_PEER_UNREADY: "2m"
+  ALARM_PULL_FAILURES: "3"
+
+  CLUSTER_CACHE_TTL: "5s"
 
 secrets: {}
 

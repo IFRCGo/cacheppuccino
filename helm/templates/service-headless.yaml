@@ -1,0 +1,21 @@
+{{- if and .Values.enabled .Values.headlessService.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cacheppuccino.headlessServiceName" . }}
+  labels:
+    {{- include "cacheppuccino.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  # Unready pods stay in DNS so a broken pod is still visible on /cluster,
+  # which is exactly when you want to see it. Hydration skips peers that
+  # report no snapshot.
+  publishNotReadyAddresses: {{ .Values.headlessService.publishNotReadyAddresses }}
+  ports:
+    - name: internal
+      port: {{ .Values.service.internalPort }}
+      targetPort: internal
+      protocol: TCP
+  selector:
+    {{- include "cacheppuccino.selectorLabels" . | nindent 4 }}
+{{- end }}

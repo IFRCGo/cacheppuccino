@@ -8,10 +8,6 @@ ingress:
     enabled: true
     # secretName: cacheppuccino-helm-secret-cert # XXX: go-deploy
 
-sqlite:
-  pvc:
-    size: 512Mi
-
 serviceAccount:
   create: true
   # annotations:

@@ -15,11 +15,6 @@ resources:
     cpu: 2
     memory: 512Mi
 
-sqlite:
-  pvc:
-    storageClassName: "longhorn"
-    size: 512Mi
-
 env:
   LISTEN_ADDR: ":8080"
   LOG_LEVEL: "info"

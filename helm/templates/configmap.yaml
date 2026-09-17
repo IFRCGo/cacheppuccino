@@ -6,8 +6,8 @@ metadata:
   labels:
     {{- include "cacheppuccino.labels" . | nindent 4 }}
 data:
-  {{- if .Values.sqlite.enabled }}
-  SQLITE_PATH: {{ printf "%s/%s" .Values.sqlite.mountPath .Values.sqlite.filename | quote }}
+  {{- if .Values.cache.enabled }}
+  CACHE_DIR: {{ .Values.cache.mountPath | quote }}
   {{- end }}
   {{- range $name, $value := .Values.env }}
   {{ $name }}: {{ tpl $value $ | quote }}

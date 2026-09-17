@@ -11,6 +11,10 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "cacheppuccino.headlessServiceName" -}}
+{{- printf "%s-headless" (include "cacheppuccino.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
 {{- define "cacheppuccino.labels" -}}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 app.kubernetes.io/name: {{ include "cacheppuccino.name" . }}
