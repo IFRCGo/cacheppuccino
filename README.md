@@ -303,6 +303,20 @@ go run . --schema
 ```
 
 
+## Sizing
+
+Measured against the production export on 2026-09-17: 0.7 MiB XLSX, 260 pages, 4 languages,
+26,578 rows, parsing in ~540 ms. One live snapshot costs ~6.4 MiB; an import briefly holds
+two. Peak RSS was 87 MiB, against a 512Mi limit.
+
+To re-measure, with the translation API credentials in the environment:
+
+```bash
+MEASURE_REAL=1 go test -run TestMeasureRealExport -v .
+```
+
+The test is skipped without `MEASURE_REAL=1`, so it never runs in CI.
+
 ## Deployment
 
 See `helm/README.md` for the topology, the resources the chart creates, and why there is

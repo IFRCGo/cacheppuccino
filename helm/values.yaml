@@ -66,16 +66,18 @@ ingress:
     enabled: false
     secretName: ""
 
-# The whole dataset is held in memory, and an import briefly holds the old
-# snapshot alongside the new one. Size these from a measurement of the real
-# export rather than from these defaults.
+# Sized from a measurement of the production export (2026-09-17): 0.7 MiB
+# XLSX, 26,578 rows, 6.4 MiB per live snapshot, ~12.8 MiB while an import
+# holds the old one alongside the new, 87 MiB peak RSS. The limit leaves
+# roughly 5x headroom over that peak; re-measure with
+# `MEASURE_REAL=1 go test -run TestMeasureRealExport` before changing it.
 resources:
   requests:
     cpu: 100m
-    memory: 256Mi
+    memory: 128Mi
   limits:
     cpu: 500m
-    memory: 1Gi
+    memory: 512Mi
 
 # Liveness reports the process; readiness reports whether this pod holds
 # servable translations. The startup probe gives the first hydration room

@@ -67,10 +67,26 @@ original incident was `/status` querying the `meta` table while `/strings` queri
    an involuntary eviction of all three) leaves no copy anywhere, and the fleet cannot serve
    until upstream comes back.
 
-Unmeasured and worth knowing before tuning pod resources: the real production XLSX size, its
-language count, and peak memory during import. `ParseXLSX` uses `excelize.GetRows`
-(`xlsx.go:47`), which materializes the whole sheet at once, and each `Snapshot` also retains
-the raw XLSX it was built from so peers can hydrate from it.
+### Measured size of the production export
+
+Measured 2026-09-17 against the live translation API (`measure_real_test.go`, run with
+`MEASURE_REAL=1` and the API credentials in the environment):
+
+| | |
+|---|---|
+| XLSX download | 0.7 MiB |
+| pages / languages | 260 / 4 |
+| rows (page x key x lang) | 26,578 |
+| parse | 536 ms |
+| one live snapshot | 6.4 MiB |
+| two snapshots, during a swap | ~12.8 MiB |
+| peak RSS | 87.4 MiB |
+
+The dataset is small enough that several decisions stop being close calls: peers transfer the
+raw XLSX rather than a pre-parsed form, and `excelize.GetRows` (`xlsx.go:47`) materializing
+the whole sheet is affordable even with every replica parsing within seconds of the others.
+Each `Snapshot` also retains the raw XLSX so peers can hydrate from it, which at 0.7 MiB is
+noise. Re-measure before assuming any of that still holds if the language count grows.
 
 ## Gotchas in the current code
 
@@ -96,9 +112,9 @@ the raw XLSX it was built from so peers can hydrate from it.
 - `AppState.consecutiveFailures` is cleared only by `recordSuccess`, which only the primary
   reaches. A demoted pod therefore carries its streak for life, so `worstPullFailure` counts
   only pods reporting `Primary`.
-- `helm/tests/alpha.yaml` pins `requests.memory == limits.memory == 512Mi` against a chart
-  default of 256Mi/1Gi. That is Guaranteed QoS with no burst headroom, and alpha's
-  `PULL_INTERVAL: 1m` means all three replicas parse the same export within seconds of each
-  other while the old snapshot is still live.
+- `helm/tests/alpha.yaml` pins `requests.memory == limits.memory == 512Mi`, which is
+  Guaranteed QoS with no burst headroom. Against the measured 87 MiB peak that is ~5x
+  headroom, so it is fine today; it is only worth revisiting if the export grows by an order
+  of magnitude.
 - CI runs `go test` without `-race`, and `go mod tidy` + `git diff --exit-code` is a required
   step.
