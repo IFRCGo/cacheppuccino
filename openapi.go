@@ -25,6 +25,16 @@ type APIResponseStatus struct {
 	Data *PodStatus `json:"data,omitempty"`
 }
 
+type APIResponseCluster struct {
+	Ok   bool         `json:"ok"`
+	Data *ClusterView `json:"data,omitempty"`
+}
+
+type APIResponseMonitor struct {
+	Ok   bool             `json:"ok"`
+	Data *MonitorResponse `json:"data,omitempty"`
+}
+
 type APIResponseStrings struct {
 	Ok   bool             `json:"ok"`
 	Data *StringsResponse `json:"data,omitempty"`
@@ -171,6 +181,46 @@ func buildOpenAPISpec(baseURL string) (*openapi3.T, error) {
 				"200": {Value: &openapi3.Response{
 					Description: ptrString("OK"),
 					Content:     status200,
+				}},
+			}),
+		},
+	})
+
+	// ---- /cluster
+	cluster200, err := jsonContentFor(APIResponseCluster{})
+	if err != nil {
+		return nil, err
+	}
+	spec.Paths.Set("/cluster", &openapi3.PathItem{
+		Get: &openapi3.Operation{
+			Summary:     "Fleet view: every pod, the current primary, and whether replicas agree",
+			OperationID: "getCluster",
+			Responses: newResponses(map[string]*openapi3.ResponseRef{
+				"200": {Value: &openapi3.Response{
+					Description: ptrString("OK"),
+					Content:     cluster200,
+				}},
+			}),
+		},
+	})
+
+	// ---- /monitor
+	monitor200, err := jsonContentFor(APIResponseMonitor{})
+	if err != nil {
+		return nil, err
+	}
+	spec.Paths.Set("/monitor", &openapi3.PathItem{
+		Get: &openapi3.Operation{
+			Summary:     "Fleet health for an external uptime check; 503 when an alarm is firing",
+			OperationID: "getMonitor",
+			Responses: newResponses(map[string]*openapi3.ResponseRef{
+				"200": {Value: &openapi3.Response{
+					Description: ptrString("No alarms firing"),
+					Content:     monitor200,
+				}},
+				"503": {Value: &openapi3.Response{
+					Description: ptrString("At least one fleet alarm is firing"),
+					Content:     monitor200,
 				}},
 			}),
 		},

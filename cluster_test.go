@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -20,6 +22,10 @@ type testNode struct {
 	src      *stubSource
 	internal *httptest.Server
 	addr     string
+
+	// requests counts what other pods asked of this one, so tests can prove
+	// the cluster view is cached rather than fanning out per hit.
+	requests atomic.Int64
 }
 
 func (n *testNode) snapshot(t *testing.T) *Snapshot {
@@ -88,10 +94,15 @@ func newFleetNode(t *testing.T, i int) *testNode {
 	syncer.SetHydrator(peers)
 	server.peers = peers
 
-	internal := httptest.NewServer(server.internalRoutes())
+	node := &testNode{}
+	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		node.requests.Add(1)
+		server.internalRoutes().ServeHTTP(w, r)
+	})
+	internal := httptest.NewServer(counted)
 	t.Cleanup(internal.Close)
 
-	return &testNode{
+	*node = testNode{
 		cfg:      cfg,
 		elector:  elector,
 		registry: registry,
@@ -103,6 +114,7 @@ func newFleetNode(t *testing.T, i int) *testNode {
 		internal: internal,
 		addr:     internal.Listener.Addr().String(),
 	}
+	return node
 }
 
 // A pod that has never run must become servable without reaching upstream:
@@ -371,4 +383,10 @@ func TestFleetPromotesNewPrimaryAfterFailure(t *testing.T) {
 	if promoted != 1 {
 		t.Errorf("promoted = %d, want exactly 1 successor", promoted)
 	}
+}
+
+// requestsTo reports how many internal requests a node has served.
+func requestsTo(t *testing.T, n *testNode) int64 {
+	t.Helper()
+	return n.requests.Load()
 }

@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/cors"
@@ -18,6 +19,14 @@ type Server struct {
 	peers    *PeerClient
 	logger   *slog.Logger
 
+	alarms *AlarmTracker
+
+	// The fleet view is cached so a public request cannot fan out to every
+	// pod on every hit.
+	clusterMu    sync.Mutex
+	clusterCache ClusterView
+	clusterAt    time.Time
+
 	now func() time.Time
 }
 
@@ -29,6 +38,7 @@ func NewServer(cfg Config, registry *Registry, state *State, syncer *Syncer, ele
 		syncer:   syncer,
 		elector:  elector,
 		logger:   logger,
+		alarms:   NewAlarmTracker(),
 		now:      time.Now,
 	}
 }
@@ -47,6 +57,19 @@ type HealthResponse struct {
 type ReadyResponse struct {
 	Status string `json:"status"`
 	Reason string `json:"reason,omitempty"`
+}
+
+// MonitorResponse is what the uptime check sees. Alarms lists only what is
+// firing, so the alert text says what broke; AllAlarms keeps the rest for a
+// human following the link.
+type MonitorResponse struct {
+	Status     string  `json:"status"`
+	AnsweredBy string  `json:"answered_by"`
+	PodCount   int     `json:"pod_count"`
+	ReadyCount int     `json:"ready_count"`
+	InSync     bool    `json:"in_sync"`
+	Alarms     []Alarm `json:"alarms"`
+	AllAlarms  []Alarm `json:"all_alarms"`
 }
 
 // AppStatus is one application's view from a single pod. /cluster reuses it
@@ -81,6 +104,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /status", s.handleStatus)
+	mux.HandleFunc("GET /cluster", s.handleCluster)
+	mux.HandleFunc("GET /monitor", s.handleMonitor)
 	mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 
 	// Recovery wraps logging, not the other way round: a panicking request
@@ -193,6 +218,45 @@ func (s *Server) appStatus(appID string, now time.Time) AppStatus {
 	st.AgeSeconds = int64(snap.Age(now).Seconds())
 	st.Servable = snap.Servable()
 	return st
+}
+
+// handleCluster is the fleet view for humans. It always answers 200: it
+// describes the fleet rather than judging it, and /monitor is what goes red.
+func (s *Server) handleCluster(w http.ResponseWriter, r *http.Request) {
+	writeOK(w, http.StatusOK, s.clusterView(r.Context()))
+}
+
+// handleMonitor is the external uptime check. It is the only endpoint
+// allowed to fail on a dependency: staleness, a missing primary, or diverged
+// replicas must raise an alert without making any pod unready, because
+// feeding those into readiness would turn stale data into a total outage.
+//
+// It answers for the fleet rather than for this pod, since the check hits
+// the public URL and reaches an arbitrary replica.
+func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
+	view := s.clusterView(r.Context())
+
+	firing := make([]Alarm, 0, len(view.Alarms))
+	for _, a := range view.Alarms {
+		if a.Firing {
+			firing = append(firing, a)
+		}
+	}
+
+	status := http.StatusOK
+	if len(firing) > 0 {
+		status = http.StatusServiceUnavailable
+	}
+
+	writeOK(w, status, MonitorResponse{
+		Status:     map[bool]string{true: "degraded", false: "ok"}[len(firing) > 0],
+		AnsweredBy: view.AnsweredBy,
+		PodCount:   view.PodCount,
+		ReadyCount: view.ReadyCount,
+		InSync:     view.InSync,
+		Alarms:     firing,
+		AllAlarms:  view.Alarms,
+	})
 }
 
 func (s *Server) handleStrings(w http.ResponseWriter, r *http.Request) {

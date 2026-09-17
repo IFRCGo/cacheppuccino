@@ -30,6 +30,9 @@ func (s *Server) peerInfo() PeerInfo {
 	apps := make([]PeerAppInfo, 0, len(s.registry.IDs()))
 	for _, id := range s.registry.IDs() {
 		info := PeerAppInfo{App: id}
+		_, lastErr, failures := s.state.App(id).snapshot()
+		info.LastPullError, info.Failures = lastErr, failures
+
 		if h, ok := s.registry.Holder(id); ok {
 			if snap := h.Load(); snap != nil {
 				info.Hash = snap.Hash

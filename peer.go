@@ -27,11 +27,13 @@ const (
 
 // PeerAppInfo is one application's state as a peer reports it.
 type PeerAppInfo struct {
-	App        string `json:"app"`
-	Hash       string `json:"hash"`
-	ImportedAt string `json:"imported_at"`
-	Rows       int    `json:"rows"`
-	Servable   bool   `json:"servable"`
+	App           string `json:"app"`
+	Hash          string `json:"hash"`
+	ImportedAt    string `json:"imported_at"`
+	Rows          int    `json:"rows"`
+	Servable      bool   `json:"servable"`
+	LastPullError string `json:"last_pull_error,omitempty"`
+	Failures      int    `json:"consecutive_failures"`
 }
 
 // Times on the wire are RFC3339Nano: snapshot versions are compared in

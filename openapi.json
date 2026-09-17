@@ -5,6 +5,164 @@
   },
   "openapi": "3.0.3",
   "paths": {
+    "/cluster": {
+      "get": {
+        "operationId": "getCluster",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "nullable": true,
+                      "properties": {
+                        "alarms": {
+                          "items": {
+                            "properties": {
+                              "detail": {
+                                "type": "string"
+                              },
+                              "firing": {
+                                "type": "boolean"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "since": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "answered_by": {
+                          "type": "string"
+                        },
+                        "apps": {
+                          "items": {
+                            "properties": {
+                              "app": {
+                                "type": "string"
+                              },
+                              "hashes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "in_sync": {
+                                "type": "boolean"
+                              },
+                              "newest_age_seconds": {
+                                "format": "int64",
+                                "type": "integer"
+                              },
+                              "rows": {
+                                "type": "integer"
+                              },
+                              "servable_pods": {
+                                "type": "integer"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "degraded": {
+                          "type": "boolean"
+                        },
+                        "in_sync": {
+                          "type": "boolean"
+                        },
+                        "pod_count": {
+                          "type": "integer"
+                        },
+                        "pods": {
+                          "items": {
+                            "properties": {
+                              "addr": {
+                                "type": "string"
+                              },
+                              "apps": {
+                                "items": {
+                                  "properties": {
+                                    "app": {
+                                      "type": "string"
+                                    },
+                                    "consecutive_failures": {
+                                      "type": "integer"
+                                    },
+                                    "hash": {
+                                      "type": "string"
+                                    },
+                                    "imported_at": {
+                                      "type": "string"
+                                    },
+                                    "last_pull_error": {
+                                      "type": "string"
+                                    },
+                                    "rows": {
+                                      "type": "integer"
+                                    },
+                                    "servable": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "pod": {
+                                "type": "string"
+                              },
+                              "primary": {
+                                "type": "boolean"
+                              },
+                              "ready": {
+                                "type": "boolean"
+                              },
+                              "version": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "primary": {
+                          "type": "string"
+                        },
+                        "ready_count": {
+                          "type": "integer"
+                        },
+                        "unreachable": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "description": ""
+          }
+        },
+        "summary": "Fleet view: every pod, the current primary, and whether replicas agree"
+      }
+    },
     "/healthz": {
       "get": {
         "operationId": "getHealthz",
@@ -71,6 +229,169 @@
           }
         },
         "summary": "Liveness: whether the process and its sync loop are alive"
+      }
+    },
+    "/monitor": {
+      "get": {
+        "operationId": "getMonitor",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "nullable": true,
+                      "properties": {
+                        "alarms": {
+                          "items": {
+                            "properties": {
+                              "detail": {
+                                "type": "string"
+                              },
+                              "firing": {
+                                "type": "boolean"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "since": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "all_alarms": {
+                          "items": {
+                            "properties": {
+                              "detail": {
+                                "type": "string"
+                              },
+                              "firing": {
+                                "type": "boolean"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "since": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "answered_by": {
+                          "type": "string"
+                        },
+                        "in_sync": {
+                          "type": "boolean"
+                        },
+                        "pod_count": {
+                          "type": "integer"
+                        },
+                        "ready_count": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "No alarms firing"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "nullable": true,
+                      "properties": {
+                        "alarms": {
+                          "items": {
+                            "properties": {
+                              "detail": {
+                                "type": "string"
+                              },
+                              "firing": {
+                                "type": "boolean"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "since": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "all_alarms": {
+                          "items": {
+                            "properties": {
+                              "detail": {
+                                "type": "string"
+                              },
+                              "firing": {
+                                "type": "boolean"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "since": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "answered_by": {
+                          "type": "string"
+                        },
+                        "in_sync": {
+                          "type": "boolean"
+                        },
+                        "pod_count": {
+                          "type": "integer"
+                        },
+                        "ready_count": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "At least one fleet alarm is firing"
+          },
+          "default": {
+            "description": ""
+          }
+        },
+        "summary": "Fleet health for an external uptime check; 503 when an alarm is firing"
       }
     },
     "/openapi.json": {
