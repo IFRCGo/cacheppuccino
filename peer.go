@@ -27,9 +27,13 @@ const (
 
 // PeerAppInfo is one application's state as a peer reports it.
 type PeerAppInfo struct {
-	App           string `json:"app"`
-	Hash          string `json:"hash"`
-	ImportedAt    string `json:"imported_at"`
+	App        string `json:"app"`
+	Hash       string `json:"hash"`
+	ImportedAt string `json:"imported_at"`
+	// LastPullAt is when this pod last reached upstream successfully,
+	// including pulls that found no change. Staleness is measured from it
+	// rather than from ImportedAt, which only moves when the content does.
+	LastPullAt    string `json:"last_pull_at,omitempty"`
 	Rows          int    `json:"rows"`
 	Servable      bool   `json:"servable"`
 	LastPullError string `json:"last_pull_error,omitempty"`
@@ -40,8 +44,8 @@ type PeerAppInfo struct {
 // milliseconds, and second-resolution timestamps would make two pods holding
 // identical content disagree about its version.
 
-// PeerInfo is a peer's self-description. It is deliberately small: every pod
-// polls every other pod on a short interval, so this is the hot path.
+// PeerInfo is a peer's self-description. It is small: every pod polls every
+// other pod on a short interval, so this is the hot path.
 type PeerInfo struct {
 	Pod     string        `json:"pod"`
 	Addr    string        `json:"addr,omitempty"`
@@ -60,6 +64,16 @@ func (p PeerInfo) app(appID string) (PeerAppInfo, bool) {
 	return PeerAppInfo{}, false
 }
 
+// appLastPull reports a peer's last successful pull for appID, empty when it
+// has never managed one. A pod that holds no snapshot may still have pulled,
+// so this is read independently of servability.
+func (p PeerInfo) appLastPull(appID string) string {
+	if a, ok := p.app(appID); ok {
+		return a.LastPullAt
+	}
+	return ""
+}
+
 // PeerClient discovers sibling pods through the headless Service and pulls
 // snapshots from them. Hydrating from a peer is how a new pod becomes ready
 // without contacting upstream, which is the whole point: upstream may be
@@ -70,8 +84,15 @@ type PeerClient struct {
 	selfPod string
 	selfIP  string
 	timeout time.Duration
-	http    *http.Client
 	logger  *slog.Logger
+
+	// http polls peer metadata. Its Timeout bounds the whole exchange.
+	http *http.Client
+	// transfer carries whole snapshots. It has no Timeout because
+	// http.Client.Timeout also covers the body read, which would cap a
+	// multi-megabyte transfer at the metadata poll's budget; fetchSnapshot
+	// bounds it with a context instead.
+	transfer *http.Client
 
 	// resolve is a seam: tests supply peers directly instead of standing up
 	// DNS.
@@ -84,13 +105,14 @@ func NewPeerClient(cfg Config, logger *slog.Logger) *PeerClient {
 		port = "8081"
 	}
 	return &PeerClient{
-		service: cfg.PeerService,
-		port:    port,
-		selfPod: cfg.PodName,
-		selfIP:  cfg.PodIP,
-		timeout: cfg.PeerTimeout,
-		http:    &http.Client{Timeout: cfg.PeerTimeout},
-		logger:  logger,
+		service:  cfg.PeerService,
+		port:     port,
+		selfPod:  cfg.PodName,
+		selfIP:   cfg.PodIP,
+		timeout:  cfg.PeerTimeout,
+		http:     &http.Client{Timeout: cfg.PeerTimeout},
+		transfer: &http.Client{},
+		logger:   logger,
 		resolve: func(ctx context.Context, host string) ([]string, error) {
 			return net.DefaultResolver.LookupHost(ctx, host)
 		},
@@ -188,15 +210,20 @@ func (p *PeerClient) Survey(ctx context.Context) ([]PeerInfo, []string) {
 	return infos, unreachable
 }
 
-// Hydrate fetches the newest snapshot any peer holds for appID. The primary
-// is preferred, but any peer will do: during a failover the primary may be
-// the pod that just went away, and a booting pod still needs somewhere to
-// hydrate from.
-func (p *PeerClient) Hydrate(ctx context.Context, appID string) (*Snapshot, []byte, bool) {
+// Hydrate fetches the newest snapshot any peer holds for appID, when that is
+// newer than current. The primary is preferred, but any peer will do: during
+// a failover the primary may be the pod that just went away, and a booting
+// pod still needs somewhere to hydrate from.
+//
+// The survey already carries each peer's hash and import time, so a peer
+// offering what this pod already holds is rejected before any transfer: the
+// alternative transfers and parses the whole export on every poll and
+// discards it.
+func (p *PeerClient) Hydrate(ctx context.Context, appID string, current *Snapshot) (*Snapshot, []byte, bool) {
 	infos, _ := p.Survey(ctx)
 
-	best, bestApp, found := pickHydrationSource(infos, appID)
-	if !found {
+	best, bestApp, bestTime, found := pickHydrationSource(infos, appID)
+	if !found || !newerThanCurrent(bestApp.Hash, bestTime, current) {
 		return nil, nil, false
 	}
 
@@ -227,9 +254,19 @@ func (p *PeerClient) Hydrate(ctx context.Context, appID string) (*Snapshot, []by
 	return snap, xlsx, true
 }
 
+// newerThanCurrent applies the same rule as Holder.StoreIfNewer to a peer's
+// advertised metadata, so a snapshot is transferred only when adopting it
+// would actually change what this pod serves.
+func newerThanCurrent(hash string, importedAt time.Time, current *Snapshot) bool {
+	if current == nil {
+		return true
+	}
+	return hash != current.Hash && importedAt.UnixMilli() > current.Version()
+}
+
 // pickHydrationSource chooses the peer holding the newest servable snapshot,
 // breaking ties towards the primary.
-func pickHydrationSource(infos []PeerInfo, appID string) (PeerInfo, PeerAppInfo, bool) {
+func pickHydrationSource(infos []PeerInfo, appID string) (PeerInfo, PeerAppInfo, time.Time, bool) {
 	var (
 		best     PeerInfo
 		bestApp  PeerAppInfo
@@ -250,7 +287,7 @@ func pickHydrationSource(infos []PeerInfo, appID string) (PeerInfo, PeerAppInfo,
 		}
 		best, bestApp, bestTime, found = info, app, at, true
 	}
-	return best, bestApp, found
+	return best, bestApp, bestTime, found
 }
 
 func (p *PeerClient) fetchSnapshot(ctx context.Context, addr, appID string) ([]byte, string, time.Time, error) {
@@ -264,7 +301,7 @@ func (p *PeerClient) fetchSnapshot(ctx context.Context, addr, appID string) ([]b
 	if err != nil {
 		return nil, "", time.Time{}, err
 	}
-	resp, err := p.http.Do(req)
+	resp, err := p.transfer.Do(req)
 	if err != nil {
 		return nil, "", time.Time{}, err
 	}

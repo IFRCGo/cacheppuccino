@@ -26,6 +26,10 @@ type testNode struct {
 	// requests counts what other pods asked of this one, so tests can prove
 	// the cluster view is cached rather than fanning out per hit.
 	requests atomic.Int64
+
+	// transfers counts snapshot downloads specifically, which is the
+	// expensive half of hydration.
+	transfers atomic.Int64
 }
 
 func (n *testNode) snapshot(t *testing.T) *Snapshot {
@@ -94,15 +98,10 @@ func newFleetNode(t *testing.T, i int) *testNode {
 	syncer.SetHydrator(peers)
 	server.peers = peers
 
-	node := &testNode{}
-	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		node.requests.Add(1)
-		server.internalRoutes().ServeHTTP(w, r)
-	})
-	internal := httptest.NewServer(counted)
-	t.Cleanup(internal.Close)
-
-	*node = testNode{
+	// Fully populated before the listener accepts anything: assigning over
+	// the struct afterwards would reset the counters the tests assert on,
+	// and go vet's copylocks does not catch a composite literal.
+	node := &testNode{
 		cfg:      cfg,
 		elector:  elector,
 		registry: registry,
@@ -111,9 +110,19 @@ func newFleetNode(t *testing.T, i int) *testNode {
 		server:   server,
 		peers:    peers,
 		src:      src,
-		internal: internal,
-		addr:     internal.Listener.Addr().String(),
 	}
+	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		node.requests.Add(1)
+		if r.URL.Path == internalSnapshotPath {
+			node.transfers.Add(1)
+		}
+		server.internalRoutes().ServeHTTP(w, r)
+	})
+	internal := httptest.NewServer(counted)
+	t.Cleanup(internal.Close)
+
+	node.internal = internal
+	node.addr = internal.Listener.Addr().String()
 	return node
 }
 
@@ -389,4 +398,32 @@ func TestFleetPromotesNewPrimaryAfterFailure(t *testing.T) {
 func requestsTo(t *testing.T, n *testNode) int64 {
 	t.Helper()
 	return n.requests.Load()
+}
+
+// A converged fleet must not keep transferring and re-parsing the export it
+// already holds: the peer loop runs every PEER_POLL_INTERVAL forever, so a
+// no-op poll that still downloads the file is permanent fleet-wide load.
+func TestPeerSyncSkipsTransferWhenAlreadyCurrent(t *testing.T) {
+	ctx := context.Background()
+	nodes := newFleet(t, 3)
+	warm, cold := nodes[0], nodes[2]
+
+	warm.src.body = seedXLSX(t)
+	warm.syncer.pullApp(ctx, defaultAppID, "test")
+
+	cold.syncer.syncAppFromPeers(ctx, defaultAppID, 0)
+	if cold.hash(t) != warm.hash(t) {
+		t.Fatalf("cold node did not hydrate")
+	}
+
+	before := warm.transfers.Load()
+	if before == 0 {
+		t.Fatalf("hydration made no snapshot transfer")
+	}
+	for range 5 {
+		cold.syncer.syncAppFromPeers(ctx, defaultAppID, 0)
+	}
+	if got := warm.transfers.Load(); got != before {
+		t.Errorf("snapshot transfers = %d after 5 no-op polls, want %d", got, before)
+	}
 }
