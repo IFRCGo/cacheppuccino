@@ -75,10 +75,7 @@ spec:
               value: {{ include "cacheppuccino.headlessServiceName" . | quote }}
             {{- end }}
           envFrom:
-            - configMapRef:
-                name: {{ include "cacheppuccino.fullname" . }}
-            - secretRef:
-                name: {{ include "cacheppuccino.secretName" . }}
+            {{- include "cacheppuccino.envFrom" . | nindent 12 }}
           {{- with .Values.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}

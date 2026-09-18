@@ -257,10 +257,10 @@ spec:
             - name: PEER_SERVICE
               value: "release-name-cacheppuccino-helm-headless"
           envFrom:
-            - configMapRef:
-                name: release-name-cacheppuccino-helm
             - secretRef:
                 name: release-name-cacheppuccino-helm-vault-secret
+            - configMapRef:
+                name: release-name-cacheppuccino-helm
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

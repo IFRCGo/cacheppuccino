@@ -83,6 +83,36 @@ the assumption that the stakater reloader annotation covers this -- that
 depends on a controller being installed in the target cluster, and the chart
 should be correct without one.
 
+### Configuration this chart does not create
+
+`extraConfigMapName` and `extraSecretsName` name a ConfigMap and a Secret that
+already exist in the namespace. Both are added to `envFrom` after the chart's
+own, so a key set in either wins.
+
+`checksum/config` covers only the ConfigMap this chart renders, so a change to
+an external object does not roll the pods by itself. Where the stakater
+reloader controller is installed, the Deployment's annotation covers them;
+where it is not, restart the pods.
+
+## Ingress annotations
+
+`ingress.annotations` is rendered through `tpl`, so a string value may
+reference release data (`{{ .Release.Namespace }}`); a non-string value is
+rendered as JSON, and a null value drops its key. Either way the value reaches
+Kubernetes as the string it requires.
+
+CI writes deployment provenance into this block before packaging the chart:
+`web-app-serve.togglecorp.com/*` keys carrying the commit, ref, PR, image,
+actor and run URL, per
+[`annotations-v1.json`](https://raw.githubusercontent.com/toggle-corp/web-app-serve-action/main/schema/annotations-v1.json).
+The Togglecorp dashboard reads them off the live Ingress to show what is
+deployed. The write is a `yq` path assignment into `values.yaml`, so the
+`annotations:` key has to stay present there even when empty.
+
+Because the values pass through `tpl`, a literal `{{` in a commit subject
+would fail the render at deploy time rather than in CI. The CI step escapes it
+before writing.
+
 ## Snapshots
 
 `helm/snapshots/*.yaml` are committed renders checked by CI. Regenerate them

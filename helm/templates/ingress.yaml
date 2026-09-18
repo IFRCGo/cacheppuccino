@@ -5,9 +5,9 @@ metadata:
   name: {{ include "cacheppuccino.fullname" . }}
   labels:
     {{- include "cacheppuccino.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
+  {{- with (include "cacheppuccino.renderAnnotations" (dict "Annotations" .Values.ingress.annotations "Context" $)) }}
   annotations:
-    {{- toYaml . | nindent 4 }}
+    {{- . | nindent 4 }}
   {{- end }}
 spec:
   {{- if .Values.ingress.className }}

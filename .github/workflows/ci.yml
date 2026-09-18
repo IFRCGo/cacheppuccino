@@ -60,6 +60,7 @@ jobs:
 
     outputs:
       docker_image_tag: ${{ steps.meta.outputs.version }}
+      docker_image_name: ${{ steps.ver.outputs.image_name }}
 
     steps:
       - name: Checkout
@@ -101,7 +102,11 @@ jobs:
             VERSION="0.1.0-c${SHORT_SHA}"
           fi
 
+          # GHCR rejects an uppercase path, and this repository owner has one.
+          IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY,,}"
+
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "image_name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push docker image
         uses: docker/build-push-action@v6
@@ -123,6 +128,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Resolving the PR behind the built commit, for the pr-* annotations.
+      pull-requests: read
 
     steps:
       - name: Checkout
@@ -171,6 +178,87 @@ jobs:
           # Update values.yaml with latest docker image
           sed -i "s/SET-BY-CICD-TAG/$IMAGE_TAG/" ./values.yaml
 
+      - name: Write provenance annotations to Helm Chart values.yaml
+        working-directory: helm
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_NAME: ${{ needs.docker.outputs.docker_image_name }}
+          IMAGE_TAG: ${{ needs.docker.outputs.docker_image_tag }}
+        run: |
+          set -euo pipefail
+
+          # Ingress annotations, read off the live object by the Togglecorp
+          # dashboard. Runs after the snapshot check so the injected values
+          # never show up as a snapshot diff.
+          ANNOTATIONS_PATH=".ingress.annotations"
+
+          # Fail loudly if the chart does not follow the expected convention,
+          # rather than letting yq silently create a bogus nested tree.
+          PARENT="${ANNOTATIONS_PATH%.*}"
+          if ! yq -e "$PARENT" values.yaml >/dev/null 2>&1; then
+            echo "::error::annotations path parent '$PARENT' does not exist in values.yaml."
+            exit 1
+          fi
+
+          # -- Provenance values (exported so yq strenv() can read them safely) --
+          export SCHEMA_VERSION="1"
+          export REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          export COMMIT="${GITHUB_SHA}"
+          export REF="${GITHUB_REF_NAME}"
+          export REF_TYPE="${GITHUB_REF_TYPE}"
+          export DATETIME COMMIT_MESSAGE
+          DATETIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # The chart runs `tpl` over annotation values, so a literal `{{` in a
+          # commit subject would fail the render at deploy time rather than
+          # here. Escape it to the Go-template literal that renders back to it.
+          COMMIT_MESSAGE="$(git log -1 --pretty=%s | sed 's/{{/{{ "{{" }}/g')"
+          export IMAGE_LABEL="${IMAGE_TAG}"
+          export IMAGE_URL="${IMAGE_NAME}:${IMAGE_TAG}"
+          export ACTOR="${GITHUB_ACTOR}"
+          export ACTOR_IMAGE_URL="https://github.com/${GITHUB_ACTOR}.png"
+          export CI_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          export REPO_OWNER_IMAGE_URL="https://github.com/${GITHUB_REPOSITORY_OWNER}.png"
+
+          P="$ANNOTATIONS_PATH"
+          A="web-app-serve.togglecorp.com"
+          EXPR="${P}.\"${A}/schema-version\" = strenv(SCHEMA_VERSION)"
+          EXPR="${EXPR} | ${P}.\"${A}/repo-url\" = strenv(REPO_URL)"
+          EXPR="${EXPR} | ${P}.\"${A}/ref\" = strenv(REF)"
+          EXPR="${EXPR} | ${P}.\"${A}/ref-type\" = strenv(REF_TYPE)"
+          EXPR="${EXPR} | ${P}.\"${A}/commit\" = strenv(COMMIT)"
+          EXPR="${EXPR} | ${P}.\"${A}/commit-message\" = strenv(COMMIT_MESSAGE)"
+          EXPR="${EXPR} | ${P}.\"${A}/datetime\" = strenv(DATETIME)"
+          EXPR="${EXPR} | ${P}.\"${A}/image-label\" = strenv(IMAGE_LABEL)"
+          EXPR="${EXPR} | ${P}.\"${A}/image-url\" = strenv(IMAGE_URL)"
+          EXPR="${EXPR} | ${P}.\"${A}/actor\" = strenv(ACTOR)"
+          EXPR="${EXPR} | ${P}.\"${A}/actor-image-url\" = strenv(ACTOR_IMAGE_URL)"
+          EXPR="${EXPR} | ${P}.\"${A}/repo-owner-image-url\" = strenv(REPO_OWNER_IMAGE_URL)"
+          EXPR="${EXPR} | ${P}.\"${A}/ci-run-url\" = strenv(CI_RUN_URL)"
+
+          # helm publishes on push and on tags, neither of which carries a PR
+          # context, so the PR is resolved from the commit. The keys are
+          # omitted when there is none. A failed API call is surfaced rather
+          # than read as "no PR", so a missing scope stays diagnosable.
+          if PR_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" --jq '.[0] // empty' 2>/tmp/gh_pr_err)"; then
+            if [ -n "$PR_JSON" ]; then
+              export PR_NUMBER PR_AUTHOR PR_AUTHOR_IMAGE_URL
+              PR_NUMBER="$(echo "$PR_JSON" | jq -r '.number')"
+              PR_AUTHOR="$(echo "$PR_JSON" | jq -r '.user.login')"
+              PR_AUTHOR_IMAGE_URL="https://github.com/${PR_AUTHOR}.png"
+              EXPR="${EXPR} | ${P}.\"${A}/pr-number\" = strenv(PR_NUMBER)"
+              EXPR="${EXPR} | ${P}.\"${A}/pr-author\" = strenv(PR_AUTHOR)"
+              EXPR="${EXPR} | ${P}.\"${A}/pr-author-image-url\" = strenv(PR_AUTHOR_IMAGE_URL)"
+            else
+              echo "::notice::No PR associated with ${GITHUB_SHA}; skipping pr-* annotations."
+            fi
+          else
+            echo "::warning::Could not query PRs for ${GITHUB_SHA} (does the token have 'pull-requests: read'?); skipping pr-* annotations. $(cat /tmp/gh_pr_err)"
+          fi
+
+          yq -i "$EXPR" values.yaml
+
+          echo "Wrote provenance annotations under ${P}:"
+          yq "${P}" values.yaml
 
       - name: Package chart
         shell: bash

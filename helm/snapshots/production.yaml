@@ -244,10 +244,10 @@ spec:
             - name: PEER_SERVICE
               value: "ifrcgo-cacheppuccino-headless"
           envFrom:
-            - configMapRef:
-                name: ifrcgo-cacheppuccino
             - secretRef:
                 name: ifrcgo-cacheppuccino-vault-secret
+            - configMapRef:
+                name: ifrcgo-cacheppuccino
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

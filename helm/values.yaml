@@ -60,6 +60,15 @@ headlessService:
 ingress:
   enabled: false
   className: ""
+  # Rendered onto Ingress.metadata.annotations. A string value is
+  # tpl-evaluated, so it can reference release data; any other value renders as
+  # JSON. Either way the value lands as the string Kubernetes requires, and a
+  # null value drops its key.
+  #
+  # CI writes deployment provenance here as `web-app-serve.togglecorp.com/*`
+  # keys (commit, ref, PR, image, actor, run URL), which the Togglecorp
+  # dashboard reads off the live Ingress. That write is a yq path assignment
+  # into this file, so the block has to exist here or the CI step fails.
   annotations: {}
   host: ""
   tls:
@@ -191,6 +200,15 @@ env:
   CLUSTER_CACHE_TTL: "5s"
 
 secrets: {}
+
+# Additional envFrom sources this chart does not create. Both are referenced
+# after the chart's own Secret and ConfigMap, so a key defined here wins.
+#
+# A change to either does not roll the pods on its own: checksum/config covers
+# only the ConfigMap this chart renders. The Deployment's reloader annotation
+# covers these too wherever that controller is installed.
+extraConfigMapName: ""
+extraSecretsName: ""
 
 # Azure Key Vault CSI Driver
 secretsStoreCsiDriver:
